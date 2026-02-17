@@ -7,23 +7,28 @@ A modular, extensible CDC platform for streaming changes from operational databa
 CDC Platform owns the full pipeline from source database to sink destination. It provisions Kafka topics, deploys Debezium connectors, manages consumer groups and offset lifecycle, monitors schemas via the Confluent Schema Registry, and routes events to configurable sinks — webhooks, PostgreSQL replicas, and Apache Iceberg lakehouse tables. Events are serialized with Avro and delivered with exactly-once guarantees through min-watermark offset commits and idempotent writes.
 
 ```
-                     ┌─────────────────── CDC Platform ───────────────────────┐
-                     │                                                        │
-┌──────────┐         │  ┌───────────┐    ┌────────────────────────────────┐   │    ┌──────────────┐
-│ Postgres │────────▸│  │  Debezium │───▸│  Kafka (topics, DLQ, schemas) │   │───▸│ Webhook      │
-│ (source) │         │  │ connector │    └──────────┬─────────────────────┘   │───▸│ PostgreSQL   │
-└──────────┘         │  └───────────┘               │                        │───▸│ Iceberg      │
-                     │                    consumer poll loop                  │    └──────────────┘
-                     │                        │                              │
-                     │            ┌───────────┼───────────┐                  │
-                     │            ▼           ▼           ▼                  │
-                     │       Queue(p0)   Queue(p1)   Queue(p2)  (bounded)   │
-                     │            │           │           │                  │
-                     │       Worker(p0)  Worker(p1)  Worker(p2) ──▸ sinks   │
-                     │                                                      │
-                     │       schema monitor    lag monitor                   │
-                     └──────────────────────────────────────────────────────┘
+ ┌─────────────────── CDC Platform ──────────────────────┐
+ │                                                       │
+ │  ┌───────────┐   ┌──────────────────────────────┐     │
+ │  │  Debezium │──▸│ Kafka (topics, DLQ, schemas) │     │
+ │  │ connector │   └──────────────┬───────────────┘     │
+ │  └───────────┘                  │                     │
+ │                      consumer poll loop               │
+ │                          │                            │
+ │              ┌───────────┼───────────┐                │
+ │              ▼           ▼           ▼                │
+ │         Queue(p0)   Queue(p1)   Queue(p2)             │
+ │              │           │           │                │
+ │         Worker(p0)  Worker(p1)  Worker(p2)──▸ sinks   │
+ │                                                       │
+ │         schema monitor     lag monitor                │
+ └───────────────────────────────────────────────────────┘
+         ▲                                     │
+    source DB                          sink destinations:
+   (Postgres)                       Webhook, Postgres, Iceberg
 ```
+
+The source database and sink destinations are the only components outside the platform boundary. The platform provisions Kafka topics, deploys Debezium connectors, manages consumer groups and offsets, monitors schemas, and routes events to sinks.
 
 ## Features
 
