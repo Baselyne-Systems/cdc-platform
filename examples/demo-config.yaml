@@ -1,13 +1,16 @@
 # Example pipeline configuration for the CDC demo.
 # Platform defaults come from the postgres_cdc_v1 template;
 # only pipeline-specific fields need to be specified here.
+#
+# Secrets use ${VAR} or ${VAR:-default} syntax and are resolved
+# from environment variables at load time.
 
 pipeline_id: demo
 topic_prefix: cdc
 
 source:
-  database: cdc_demo
-  password: cdc_password
+  database: ${CDC_SOURCE_DATABASE:-cdc_demo}
+  password: ${CDC_SOURCE_PASSWORD:-cdc_password}
   tables:
     - public.customers
     - public.orders
@@ -18,7 +21,7 @@ sinks:
     sink_type: webhook
     enabled: true
     webhook:
-      url: http://localhost:8000/cdc-events
+      url: ${WEBHOOK_URL:-http://localhost:8000/cdc-events}
       method: POST
       headers:
         X-Source: cdc-platform
@@ -28,20 +31,21 @@ sinks:
     sink_type: postgres
     enabled: false
     postgres:
-      host: localhost
-      port: 5433
-      database: analytics
-      username: cdc_writer
-      password: cdc_writer_password
+      host: ${ANALYTICS_DB_HOST:-localhost}
+      port: ${ANALYTICS_DB_PORT:-5433}
+      database: ${ANALYTICS_DB_NAME:-analytics}
+      username: ${ANALYTICS_DB_USER:-cdc_writer}
+      password: ${ANALYTICS_DB_PASSWORD:-cdc_writer_password}
       target_table: public.cdc_events
       batch_size: 50
+      upsert: true
 
   - sink_id: iceberg-lake
     sink_type: iceberg
     enabled: false
     iceberg:
-      catalog_uri: "sqlite:////tmp/cdc_catalog.db"
-      warehouse: "file:///tmp/cdc_warehouse"
+      catalog_uri: ${ICEBERG_CATALOG_URI:-sqlite:////tmp/cdc_catalog.db}
+      warehouse: ${ICEBERG_WAREHOUSE:-file:///tmp/cdc_warehouse}
       table_name: customers_cdc
       write_mode: append
       batch_size: 500

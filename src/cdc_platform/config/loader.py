@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +11,37 @@ import yaml
 
 from cdc_platform.config.models import PipelineConfig
 from cdc_platform.config.templates import build_pipeline_config
+
+# Matches ${VAR} or ${VAR:-default}
+_ENV_PATTERN = re.compile(r"\$\{([^}:]+)(?::-((?:[^}\\]|\\.)*))?}")
+
+
+def _resolve_env_str(value: str) -> str:
+    """Replace all ${VAR} / ${VAR:-default} references in a string."""
+
+    def _replace(match: re.Match[str]) -> str:
+        var_name = match.group(1)
+        default = match.group(2)
+        env_val = os.environ.get(var_name)
+        if env_val is not None:
+            return env_val
+        if default is not None:
+            return default.replace("\\}", "}")
+        msg = f"Environment variable '{var_name}' is not set and no default provided"
+        raise ValueError(msg)
+
+    return _ENV_PATTERN.sub(_replace, value)
+
+
+def resolve_env_vars(data: Any) -> Any:
+    """Recursively resolve ${VAR} and ${VAR:-default} in parsed YAML data."""
+    if isinstance(data, str):
+        return _resolve_env_str(data)
+    if isinstance(data, dict):
+        return {k: resolve_env_vars(v) for k, v in data.items()}
+    if isinstance(data, list):
+        return [resolve_env_vars(item) for item in data]
+    return data
 
 
 def load_yaml(path: str | Path) -> dict[str, Any]:
@@ -22,7 +55,7 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         msg = f"Expected a YAML mapping at top level, got {type(data).__name__}"
         raise TypeError(msg)
-    return data
+    return resolve_env_vars(data)
 
 
 def load_pipeline_config(
