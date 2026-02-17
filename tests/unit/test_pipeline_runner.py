@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
 import pytest
 
@@ -53,8 +53,10 @@ class TestPipelineDispatch:
 
         sink1 = AsyncMock()
         sink1.sink_id = "wh1"
+        type(sink1).flushed_offsets = PropertyMock(return_value={})
         sink2 = AsyncMock()
         sink2.sink_id = "wh2"
+        type(sink2).flushed_offsets = PropertyMock(return_value={})
         pipeline._sinks = [sink1, sink2]
 
         msg = _mock_message()
@@ -74,6 +76,7 @@ class TestPipelineDispatch:
         failing_sink = AsyncMock()
         failing_sink.sink_id = "wh1"
         failing_sink.write.side_effect = Exception("connection refused")
+        type(failing_sink).flushed_offsets = PropertyMock(return_value={})
         pipeline._sinks = [failing_sink]
 
         mock_dlq = MagicMock()
@@ -95,9 +98,11 @@ class TestPipelineDispatch:
         failing_sink = AsyncMock()
         failing_sink.sink_id = "wh1"
         failing_sink.write.side_effect = Exception("fail")
+        type(failing_sink).flushed_offsets = PropertyMock(return_value={})
 
         ok_sink = AsyncMock()
         ok_sink.sink_id = "wh2"
+        type(ok_sink).flushed_offsets = PropertyMock(return_value={})
 
         pipeline._sinks = [failing_sink, ok_sink]
         pipeline._dlq = MagicMock()
@@ -113,6 +118,7 @@ class TestPipelineDispatch:
 
         sink = AsyncMock()
         sink.sink_id = "wh1"
+        type(sink).flushed_offsets = PropertyMock(return_value={})
         pipeline._sinks = [sink]
 
         await pipeline._stop_sinks()
@@ -142,9 +148,135 @@ class TestDispatchAsHandler:
 
         sink = AsyncMock()
         sink.sink_id = "wh1"
+        type(sink).flushed_offsets = PropertyMock(return_value={})
         pipeline._sinks = [sink]
 
         msg = _mock_message()
         await pipeline._dispatch_to_sinks({"id": 1}, {"v": 1}, msg)
 
         sink.write.assert_awaited_once()
+
+
+def _mock_sink(sink_id: str, flushed: dict[tuple[str, int], int] | None = None) -> MagicMock:
+    """Create a mock sink with flushed_offsets property."""
+    sink = AsyncMock()
+    sink.sink_id = sink_id
+    type(sink).flushed_offsets = PropertyMock(return_value=flushed or {})
+    return sink
+
+
+@pytest.mark.asyncio
+class TestWatermarkCommit:
+    async def test_watermark_committed_when_all_sinks_flushed(self):
+        config = _make_pipeline(_webhook_sink_config("wh1"))
+        pipeline = Pipeline(config)
+
+        mock_consumer = MagicMock()
+        pipeline._consumer = mock_consumer
+
+        sink = _mock_sink("wh1", {("t", 0): 10})
+        pipeline._sinks = [sink]
+
+        pipeline._maybe_commit_watermark()
+
+        mock_consumer.commit_offsets.assert_called_once_with({("t", 0): 10})
+
+    async def test_watermark_not_committed_twice(self):
+        config = _make_pipeline(_webhook_sink_config("wh1"))
+        pipeline = Pipeline(config)
+
+        mock_consumer = MagicMock()
+        pipeline._consumer = mock_consumer
+
+        sink = _mock_sink("wh1", {("t", 0): 10})
+        pipeline._sinks = [sink]
+
+        pipeline._maybe_commit_watermark()
+        pipeline._maybe_commit_watermark()
+
+        assert mock_consumer.commit_offsets.call_count == 1
+
+    async def test_min_watermark_across_sinks(self):
+        config = _make_pipeline(
+            _webhook_sink_config("wh1"), _webhook_sink_config("wh2"),
+        )
+        pipeline = Pipeline(config)
+
+        mock_consumer = MagicMock()
+        pipeline._consumer = mock_consumer
+
+        sink1 = _mock_sink("wh1", {("t", 0): 10})
+        sink2 = _mock_sink("wh2", {("t", 0): 4})
+        pipeline._sinks = [sink1, sink2]
+
+        pipeline._maybe_commit_watermark()
+
+        mock_consumer.commit_offsets.assert_called_once_with({("t", 0): 4})
+
+    async def test_partition_suppressed_when_sink_not_flushed(self):
+        config = _make_pipeline(
+            _webhook_sink_config("wh1"), _webhook_sink_config("wh2"),
+        )
+        pipeline = Pipeline(config)
+
+        mock_consumer = MagicMock()
+        pipeline._consumer = mock_consumer
+
+        sink1 = _mock_sink("wh1", {("t", 0): 10})
+        sink2 = _mock_sink("wh2", {})  # hasn't flushed partition 0 yet
+        pipeline._sinks = [sink1, sink2]
+
+        pipeline._maybe_commit_watermark()
+
+        mock_consumer.commit_offsets.assert_not_called()
+
+    async def test_multiple_partitions_committed_independently(self):
+        config = _make_pipeline(_webhook_sink_config("wh1"))
+        pipeline = Pipeline(config)
+
+        mock_consumer = MagicMock()
+        pipeline._consumer = mock_consumer
+
+        sink = _mock_sink("wh1", {("t", 0): 5, ("t", 1): 12})
+        pipeline._sinks = [sink]
+
+        pipeline._maybe_commit_watermark()
+
+        mock_consumer.commit_offsets.assert_called_once_with({("t", 0): 5, ("t", 1): 12})
+
+    async def test_stop_sinks_commits_final_watermark(self):
+        config = _make_pipeline(_webhook_sink_config("wh1"))
+        pipeline = Pipeline(config)
+
+        mock_consumer = MagicMock()
+        pipeline._consumer = mock_consumer
+
+        sink = _mock_sink("wh1", {("t", 0): 99})
+        pipeline._sinks = [sink]
+
+        await pipeline._stop_sinks()
+
+        mock_consumer.commit_offsets.assert_called_once_with({("t", 0): 99})
+
+    async def test_no_commit_when_consumer_is_none(self):
+        config = _make_pipeline(_webhook_sink_config("wh1"))
+        pipeline = Pipeline(config)
+        pipeline._consumer = None
+
+        sink = _mock_sink("wh1", {("t", 0): 10})
+        pipeline._sinks = [sink]
+
+        pipeline._maybe_commit_watermark()
+        # No consumer, so no commit — no assertion needed, just no error
+
+    async def test_no_commit_when_no_sinks(self):
+        config = _make_pipeline()
+        pipeline = Pipeline(config)
+
+        mock_consumer = MagicMock()
+        pipeline._consumer = mock_consumer
+        pipeline._sinks = []
+
+        pipeline._maybe_commit_watermark()
+
+        mock_consumer.commit_offsets.assert_not_called()

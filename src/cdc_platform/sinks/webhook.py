@@ -28,10 +28,15 @@ class WebhookSink:
             msg = "WebhookSink requires a webhook sub-config"
             raise ValueError(msg)
         self._client: httpx.AsyncClient | None = None
+        self._flushed_offsets: dict[tuple[str, int], int] = {}
 
     @property
     def sink_id(self) -> str:
         return self._config.sink_id
+
+    @property
+    def flushed_offsets(self) -> dict[tuple[str, int], int]:
+        return self._flushed_offsets
 
     async def start(self) -> None:
         headers: dict[str, str] = dict(self._webhook.headers)
@@ -88,6 +93,11 @@ class WebhookSink:
             response.raise_for_status()
 
         await _send()
+
+        key_tp = (topic, partition)
+        if offset > self._flushed_offsets.get(key_tp, -1):
+            self._flushed_offsets[key_tp] = offset
+
         logger.debug(
             "webhook_sink.write",
             sink_id=self.sink_id,

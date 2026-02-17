@@ -28,10 +28,15 @@ class PostgresSink:
             raise ValueError(msg)
         self._conn: Any = None
         self._buffer: list[tuple[str, str, str, int, int]] = []
+        self._flushed_offsets: dict[tuple[str, int], int] = {}
 
     @property
     def sink_id(self) -> str:
         return self._config.sink_id
+
+    @property
+    def flushed_offsets(self) -> dict[tuple[str, int], int]:
+        return self._flushed_offsets
 
     async def start(self) -> None:
         try:
@@ -97,12 +102,18 @@ class PostgresSink:
         def _insert() -> None:
             try:
                 cur = self._conn.cursor()
-                cur.executemany(
+                sql = (
                     f"INSERT INTO {self._pg_config.target_table} "  # noqa: S608
                     "(event_key, event_value, source_topic, source_partition, source_offset) "
-                    "VALUES (%s, %s, %s, %s, %s)",
-                    batch,
+                    "VALUES (%s, %s, %s, %s, %s)"
                 )
+                if self._pg_config.upsert:
+                    sql += (
+                        " ON CONFLICT (source_topic, source_partition, source_offset) "
+                        "DO UPDATE SET event_key=EXCLUDED.event_key, "
+                        "event_value=EXCLUDED.event_value"
+                    )
+                cur.executemany(sql, batch)
                 self._conn.commit()
                 cur.close()
             except Exception:
@@ -110,6 +121,12 @@ class PostgresSink:
                 raise
 
         _insert()
+
+        for row in batch:
+            key_tp = (row[2], row[3])  # (topic, partition)
+            if row[4] > self._flushed_offsets.get(key_tp, -1):
+                self._flushed_offsets[key_tp] = row[4]
+
         logger.debug(
             "postgres_sink.flushed",
             sink_id=self.sink_id,

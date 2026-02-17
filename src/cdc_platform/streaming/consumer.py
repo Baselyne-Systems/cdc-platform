@@ -8,7 +8,13 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import structlog
-from confluent_kafka import Consumer, KafkaError, KafkaException, Message
+from confluent_kafka import (
+    Consumer,
+    KafkaError,
+    KafkaException,
+    Message,
+    TopicPartition,
+)
 from confluent_kafka.schema_registry import SchemaRegistryClient
 from confluent_kafka.schema_registry.avro import AvroDeserializer
 from confluent_kafka.serialization import MessageField, SerializationContext
@@ -108,7 +114,6 @@ class CDCConsumer:
                 try:
                     key, value = self._deserialize(msg)
                     self._handler(key, value, msg)
-                    self._consumer.commit(message=msg)
                 except Exception as exc:
                     self._handle_error(msg, exc)
         finally:
@@ -140,7 +145,6 @@ class CDCConsumer:
                 try:
                     key, value = self._deserialize(msg)
                     await self._async_handler(key, value, msg)
-                    self._consumer.commit(message=msg)
                 except Exception as exc:
                     self._handle_error(msg, exc)
         finally:
@@ -173,6 +177,15 @@ class CDCConsumer:
                 error=exc,
             )
         self._consumer.commit(message=msg)
+
+    def commit_offsets(self, offsets: dict[tuple[str, int], int]) -> None:
+        """Commit specific offsets for (topic, partition) pairs."""
+        topic_partitions = [
+            TopicPartition(topic, partition, offset + 1)  # committed = next-to-fetch
+            for (topic, partition), offset in offsets.items()
+        ]
+        if topic_partitions:
+            self._consumer.commit(offsets=topic_partitions, asynchronous=False)
 
     def stop(self) -> None:
         """Signal the consume loop to stop."""

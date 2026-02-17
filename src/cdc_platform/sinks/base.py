@@ -18,6 +18,11 @@ class SinkConnector(Protocol):
         """Unique identifier for this sink instance."""
         ...
 
+    @property
+    def flushed_offsets(self) -> dict[tuple[str, int], int]:
+        """Max offset durably written per (topic, partition)."""
+        ...
+
     async def start(self) -> None:
         """Initialize resources (connections, HTTP clients, etc.)."""
         ...

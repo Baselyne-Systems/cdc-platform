@@ -16,7 +16,7 @@ from cdc_platform.config.models import (
 from cdc_platform.sinks.postgres import PostgresSink
 
 
-def _make_sink(batch_size: int = 3) -> PostgresSink:
+def _make_sink(batch_size: int = 3, upsert: bool = False) -> PostgresSink:
     cfg = SinkConfig(
         sink_id="test-pg",
         sink_type=SinkType.POSTGRES,
@@ -25,6 +25,7 @@ def _make_sink(batch_size: int = 3) -> PostgresSink:
             database="testdb",
             target_table="public.cdc_events",
             batch_size=batch_size,
+            upsert=upsert,
         ),
     )
     return PostgresSink(cfg)
@@ -149,3 +150,78 @@ class TestPostgresSink:
     async def test_sink_id(self):
         sink = _make_sink()
         assert sink.sink_id == "test-pg"
+
+    async def test_flushed_offsets_tracks_max_per_partition(self):
+        sink = _make_sink(batch_size=10)
+        mock_cursor = MagicMock()
+        sink._conn = MagicMock()
+        sink._conn.cursor.return_value = mock_cursor
+
+        await sink.write(key=None, value=None, topic="t", partition=0, offset=1)
+        await sink.write(key=None, value=None, topic="t", partition=0, offset=5)
+        await sink.write(key=None, value=None, topic="t", partition=1, offset=3)
+        await sink.flush()
+
+        assert sink.flushed_offsets == {("t", 0): 5, ("t", 1): 3}
+
+    async def test_flushed_offsets_accumulates_across_flushes(self):
+        sink = _make_sink(batch_size=10)
+        mock_cursor = MagicMock()
+        sink._conn = MagicMock()
+        sink._conn.cursor.return_value = mock_cursor
+
+        await sink.write(key=None, value=None, topic="t", partition=0, offset=1)
+        await sink.flush()
+        assert sink.flushed_offsets == {("t", 0): 1}
+
+        await sink.write(key=None, value=None, topic="t", partition=0, offset=10)
+        await sink.flush()
+        assert sink.flushed_offsets == {("t", 0): 10}
+
+    async def test_flushed_offsets_empty_before_flush(self):
+        sink = _make_sink(batch_size=10)
+        sink._conn = MagicMock()
+
+        await sink.write(key=None, value=None, topic="t", partition=0, offset=1)
+        assert sink.flushed_offsets == {}
+
+    async def test_flushed_offsets_unchanged_on_flush_failure(self):
+        sink = _make_sink(batch_size=10)
+        mock_cursor = MagicMock()
+        mock_cursor.executemany.side_effect = Exception("db error")
+        sink._conn = MagicMock()
+        sink._conn.cursor.return_value = mock_cursor
+
+        await sink.write(key=None, value=None, topic="t", partition=0, offset=1)
+
+        with pytest.raises(Exception, match="db error"):
+            await sink.flush()
+
+        assert sink.flushed_offsets == {}
+
+    async def test_upsert_true_generates_on_conflict_sql(self):
+        sink = _make_sink(batch_size=10, upsert=True)
+        mock_cursor = MagicMock()
+        sink._conn = MagicMock()
+        sink._conn.cursor.return_value = mock_cursor
+
+        await sink.write(key={"id": 1}, value={"v": 1}, topic="t", partition=0, offset=1)
+        await sink.flush()
+
+        sql = mock_cursor.executemany.call_args[0][0]
+        assert "ON CONFLICT" in sql
+        assert "DO UPDATE SET" in sql
+        assert "EXCLUDED.event_key" in sql
+        assert "EXCLUDED.event_value" in sql
+
+    async def test_upsert_false_no_on_conflict_sql(self):
+        sink = _make_sink(batch_size=10, upsert=False)
+        mock_cursor = MagicMock()
+        sink._conn = MagicMock()
+        sink._conn.cursor.return_value = mock_cursor
+
+        await sink.write(key={"id": 1}, value={"v": 1}, topic="t", partition=0, offset=1)
+        await sink.flush()
+
+        sql = mock_cursor.executemany.call_args[0][0]
+        assert "ON CONFLICT" not in sql

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from cdc_platform.config.models import SinkConfig, SinkType
 from cdc_platform.sinks.base import SinkConnector
+from cdc_platform.sinks.iceberg import IcebergSink
 from cdc_platform.sinks.postgres import PostgresSink
 from cdc_platform.sinks.webhook import WebhookSink
 
 _SINK_REGISTRY: dict[SinkType, type] = {
     SinkType.WEBHOOK: WebhookSink,
     SinkType.POSTGRES: PostgresSink,
+    SinkType.ICEBERG: IcebergSink,
 }
 
 

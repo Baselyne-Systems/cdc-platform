@@ -23,6 +23,9 @@ dependencies = [
 postgres = [
     "psycopg2-binary>=2.9,<3",
 ]
+iceberg = [
+    "pyiceberg[pyarrow,sql-sqlite,s3fs]>=0.8,<1",
+]
 dev = [
     "pytest>=8,<9",
     "pytest-asyncio>=0.24,<1",

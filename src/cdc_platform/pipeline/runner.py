@@ -32,6 +32,7 @@ class Pipeline:
         self._sinks: list[SinkConnector] = []
         self._consumer: CDCConsumer | None = None
         self._dlq: DLQHandler | None = None
+        self._last_committed: dict[tuple[str, int], int] = {}
 
     def start(self) -> None:
         """Start the full pipeline (blocking)."""
@@ -120,6 +121,7 @@ class Pipeline:
                     )
 
         await asyncio.gather(*[_write_to_sink(s) for s in self._sinks])
+        self._maybe_commit_watermark()
 
     async def _stop_sinks(self) -> None:
         """Flush and stop all sinks."""
@@ -133,6 +135,36 @@ class Pipeline:
                     sink_id=sink.sink_id,
                     error=str(exc),
                 )
+        self._maybe_commit_watermark()
+
+    def _maybe_commit_watermark(self) -> None:
+        """Commit the min-watermark offset across all sinks."""
+        if not self._sinks or self._consumer is None:
+            return
+
+        all_partitions: set[tuple[str, int]] = set()
+        for sink in self._sinks:
+            all_partitions.update(sink.flushed_offsets.keys())
+        if not all_partitions:
+            return
+
+        committable: dict[tuple[str, int], int] = {}
+        for tp in all_partitions:
+            min_offset = min(sink.flushed_offsets.get(tp, -1) for sink in self._sinks)
+            if min_offset >= 0:
+                committable[tp] = min_offset
+        if not committable:
+            return
+
+        to_commit = {
+            tp: offset for tp, offset in committable.items()
+            if offset > self._last_committed.get(tp, -1)
+        }
+        if not to_commit:
+            return
+
+        self._consumer.commit_offsets(to_commit)
+        self._last_committed.update(to_commit)
 
     def stop(self) -> None:
         """Signal the pipeline to stop."""

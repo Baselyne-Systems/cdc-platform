@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from enum import StrEnum
-from typing import Annotated, Self
+from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -101,6 +101,7 @@ class SinkType(StrEnum):
 
     WEBHOOK = "webhook"
     POSTGRES = "postgres"
+    ICEBERG = "iceberg"
 
 
 class WebhookSinkConfig(BaseModel):
@@ -138,6 +139,24 @@ class PostgresSinkConfig(BaseModel):
         return v
 
 
+class IcebergSinkConfig(BaseModel):
+    """Configuration for an Apache Iceberg lakehouse sink."""
+
+    catalog_name: str = "default"
+    catalog_uri: str
+    warehouse: str
+    table_namespace: str = "default"
+    table_name: str
+    write_mode: Literal["append", "upsert"] = "append"
+    batch_size: int = 1000
+    auto_create_table: bool = True
+    partition_by: list[str] = Field(default_factory=list)
+    s3_endpoint: str | None = None
+    s3_access_key_id: str | None = None
+    s3_secret_access_key: SecretStr | None = None
+    s3_region: str = "us-east-1"
+
+
 class SinkConfig(BaseModel):
     """Configuration for a single sink destination."""
 
@@ -147,6 +166,7 @@ class SinkConfig(BaseModel):
     retry: RetryConfig = RetryConfig()
     webhook: WebhookSinkConfig | None = None
     postgres: PostgresSinkConfig | None = None
+    iceberg: IcebergSinkConfig | None = None
 
     @model_validator(mode="after")
     def check_matching_sub_config(self) -> Self:
@@ -156,6 +176,9 @@ class SinkConfig(BaseModel):
             raise ValueError(msg)
         if self.sink_type == SinkType.POSTGRES and self.postgres is None:
             msg = "postgres config is required when sink_type is 'postgres'"
+            raise ValueError(msg)
+        if self.sink_type == SinkType.ICEBERG and self.iceberg is None:
+            msg = "iceberg config is required when sink_type is 'iceberg'"
             raise ValueError(msg)
         return self
 
