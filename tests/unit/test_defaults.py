@@ -1,27 +1,32 @@
-"""Unit tests for template loading and config merging."""
+"""Unit tests for default config loading and merging."""
 
 import pytest
 
-from cdc_platform.config.models import SourceType
-from cdc_platform.config.templates import (
+from cdc_platform.config.defaults import (
     build_pipeline_config,
-    load_template,
+    load_defaults,
     merge_configs,
 )
+from cdc_platform.config.models import SourceType
 
 
-class TestLoadTemplate:
-    def test_loads_postgres_template(self):
-        tpl = load_template("postgres_cdc_v1")
-        assert tpl["source"]["source_type"] == "postgres"
-        assert "kafka" not in tpl
-        assert "connector" not in tpl
-        assert "dlq" not in tpl
-        assert "retry" not in tpl
+class TestLoadDefaults:
+    def test_loads_pipeline_defaults(self):
+        defaults = load_defaults("pipeline")
+        assert defaults["source"]["source_type"] == "postgres"
+        assert "kafka" not in defaults
+        assert "connector" not in defaults
+        assert "dlq" not in defaults
+        assert "retry" not in defaults
 
-    def test_missing_template_raises(self):
+    def test_loads_platform_defaults(self):
+        defaults = load_defaults("platform")
+        assert defaults["kafka"]["bootstrap_servers"] == "localhost:9092"
+        assert defaults["dlq"]["enabled"] is True
+
+    def test_missing_defaults_raises(self):
         with pytest.raises(FileNotFoundError, match="nonexistent"):
-            load_template("nonexistent")
+            load_defaults("nonexistent")
 
 
 class TestMergeConfigs:

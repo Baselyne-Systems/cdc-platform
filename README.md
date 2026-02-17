@@ -42,7 +42,7 @@ The source database and sink destinations are the only components outside the pl
 - **Dead Letter Queue** — per-sink failures are routed to a DLQ topic with full diagnostic headers
 - **Avro serialization** — schema evolution managed by Confluent Schema Registry
 - **Retry with backoff** — configurable exponential backoff with jitter on all sink writes
-- **Template-based config** — base templates with per-pipeline overrides, validated by Pydantic
+- **Defaults-based config** — built-in defaults with per-pipeline overrides, validated by Pydantic
 - **CLI tooling** — validate configs, deploy connectors, check health, debug-consume, and run pipelines
 - **Observability** — structured logging (structlog), health probes, consumer lag metrics per partition
 
@@ -447,11 +447,11 @@ src/cdc_platform/
 ├── cli.py                          # Typer CLI (validate, deploy, health, consume, run)
 ├── config/
 │   ├── models.py                   # Pydantic configuration models
-│   ├── loader.py                   # YAML + template loader
-│   ├── templates.py                # Template merging logic
-│   └── templates/
+│   ├── loader.py                   # YAML + env var config loader
+│   ├── defaults.py                 # Default config loading and merging
+│   └── defaults/
 │       ├── platform.yaml           # Default platform infrastructure config
-│       └── postgres_cdc_v1.yaml    # Default PostgreSQL CDC pipeline template
+│       └── pipeline.yaml           # Default pipeline config (source defaults)
 ├── sources/
 │   └── debezium/
 │       ├── client.py               # Async Kafka Connect REST client

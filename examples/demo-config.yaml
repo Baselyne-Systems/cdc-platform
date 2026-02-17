@@ -1,5 +1,5 @@
 # Example pipeline configuration for the CDC demo.
-# Platform defaults come from the postgres_cdc_v1 template;
+# Pipeline defaults come from config/defaults/pipeline.yaml;
 # only pipeline-specific fields need to be specified here.
 #
 # Secrets use ${VAR} or ${VAR:-default} syntax and are resolved

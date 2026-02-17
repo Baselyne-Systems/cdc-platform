@@ -12,11 +12,12 @@ import asyncio
 import sys
 from typing import Any
 
-from rich.console import Console
 from confluent_kafka import Message
+from rich.console import Console
 
-from cdc_platform.config.templates import build_pipeline_config
-from cdc_platform.observability.health import check_platform_health, Status
+from cdc_platform.config.defaults import build_pipeline_config
+from cdc_platform.config.models import PlatformConfig
+from cdc_platform.observability.health import Status, check_platform_health
 from cdc_platform.sources.debezium.client import DebeziumClient
 from cdc_platform.sources.debezium.config import connector_name
 from cdc_platform.streaming.consumer import CDCConsumer
@@ -26,7 +27,7 @@ console = Console()
 
 
 def main() -> None:
-    # 1. Build config from template + minimal overrides
+    # 1. Build config from defaults + minimal overrides
     pipeline = build_pipeline_config(
         {
             "pipeline_id": "demo",
@@ -37,10 +38,11 @@ def main() -> None:
             },
         },
     )
+    platform = PlatformConfig()
     console.print("[bold]Pipeline config built[/bold]", pipeline.pipeline_id)
 
     # 2. Health check
-    health = check_platform_health()
+    health = check_platform_health(platform)
     if not health.healthy:
         console.print("[red]Platform not healthy:[/red]", health.summary)
         console.print("Run 'make up' first.")
@@ -49,9 +51,9 @@ def main() -> None:
 
     # 3. Register connector
     async def deploy() -> None:
-        async with DebeziumClient(pipeline.connector) as client:
+        async with DebeziumClient(platform.connector) as client:
             await client.wait_until_ready()
-            await client.register_connector(pipeline)
+            await client.register_connector(pipeline, platform)
             console.print(
                 f"[green]Connector registered:[/green] {connector_name(pipeline)}"
             )
@@ -60,7 +62,9 @@ def main() -> None:
 
     # 4. Consume CDC events
     cdc_topics = [
-        t for t in topics_for_pipeline(pipeline) if not t.endswith(".dlq")
+        t
+        for t in topics_for_pipeline(pipeline, platform)
+        if not t.endswith(".dlq")
     ]
     console.print(f"[yellow]Consuming from:[/yellow] {cdc_topics}")
     console.print("[dim]Press Ctrl+C to stop[/dim]\n")
@@ -81,7 +85,7 @@ def main() -> None:
 
     consumer = CDCConsumer(
         topics=cdc_topics,
-        kafka_config=pipeline.kafka,
+        kafka_config=platform.kafka,
         handler=handler,
     )
     consumer.consume()

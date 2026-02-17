@@ -9,8 +9,12 @@ from typing import Any
 
 import yaml
 
+from cdc_platform.config.defaults import (
+    DEFAULTS_DIR,
+    build_pipeline_config,
+    merge_configs,
+)
 from cdc_platform.config.models import PipelineConfig, PlatformConfig
-from cdc_platform.config.templates import build_pipeline_config
 
 # Matches ${VAR} or ${VAR:-default}
 _ENV_PATTERN = re.compile(r"\$\{([^}:]+)(?::-((?:[^}\\]|\\.)*))?}")
@@ -58,19 +62,27 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
     return resolve_env_vars(data)
 
 
+def _load_platform_defaults() -> dict[str, Any]:
+    """Load the built-in platform.yaml defaults."""
+    path = DEFAULTS_DIR / "platform.yaml"
+    with path.open() as f:
+        return yaml.safe_load(f)  # type: ignore[no-any-return]
+
+
 def load_platform_config(path: str | Path | None = None) -> PlatformConfig:
-    """Load platform config from YAML. Falls back to built-in defaults."""
+    """Load platform config from built-in defaults, optionally merged with overrides."""
+    base = _load_platform_defaults()
     if path is not None:
-        data = load_yaml(path)
-        return PlatformConfig.model_validate(data)
-    return PlatformConfig()
+        overrides = load_yaml(path)
+        base = merge_configs(base, overrides)
+    return PlatformConfig.model_validate(base)
 
 
 def load_pipeline_config(
     path: str | Path,
     *,
-    template: str = "postgres_cdc_v1",
+    defaults: str = "pipeline",
 ) -> PipelineConfig:
-    """Load a user config YAML and merge with a pipeline template."""
+    """Load a user config YAML and merge with pipeline defaults."""
     overrides = load_yaml(path)
-    return build_pipeline_config(overrides, template=template)
+    return build_pipeline_config(overrides, defaults=defaults)

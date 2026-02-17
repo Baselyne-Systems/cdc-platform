@@ -1,4 +1,4 @@
-"""Template loading and config merging utilities."""
+"""Default config loading and merging utilities."""
 
 from __future__ import annotations
 
@@ -9,14 +9,14 @@ import yaml
 
 from cdc_platform.config.models import PipelineConfig
 
-TEMPLATES_DIR = Path(__file__).parent / "templates"
+DEFAULTS_DIR = Path(__file__).parent / "defaults"
 
 
-def load_template(name: str = "postgres_cdc_v1") -> dict[str, Any]:
-    """Load a YAML template by name from the templates directory."""
-    path = TEMPLATES_DIR / f"{name}.yaml"
+def load_defaults(name: str = "pipeline") -> dict[str, Any]:
+    """Load a YAML defaults file by name from the defaults directory."""
+    path = DEFAULTS_DIR / f"{name}.yaml"
     if not path.exists():
-        msg = f"Template '{name}' not found at {path}"
+        msg = f"Defaults file '{name}' not found at {path}"
         raise FileNotFoundError(msg)
     with path.open() as f:
         return yaml.safe_load(f)  # type: ignore[no-any-return]
@@ -36,9 +36,9 @@ def merge_configs(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, 
 def build_pipeline_config(
     overrides: dict[str, Any],
     *,
-    template: str = "postgres_cdc_v1",
+    defaults: str = "pipeline",
 ) -> PipelineConfig:
-    """Build a validated PipelineConfig by merging a template with overrides."""
-    base = load_template(template)
+    """Build a validated PipelineConfig by merging defaults with overrides."""
+    base = load_defaults(defaults)
     merged = merge_configs(base, overrides)
     return PipelineConfig.model_validate(merged)
