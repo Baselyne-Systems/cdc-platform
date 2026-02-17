@@ -12,8 +12,8 @@ from confluent_kafka import Message
 from rich.console import Console
 from rich.table import Table
 
-from cdc_platform.config.loader import load_pipeline_config
-from cdc_platform.config.models import PipelineConfig
+from cdc_platform.config.loader import load_pipeline_config, load_platform_config
+from cdc_platform.config.models import PipelineConfig, PlatformConfig
 from cdc_platform.observability.health import (
     Status,
     check_platform_health,
@@ -26,23 +26,33 @@ console = Console()
 app = typer.Typer(name="cdc", help="CDC Platform CLI")
 
 
-def _load(config_path: str) -> PipelineConfig:
+def _load(
+    config_path: str,
+    platform_config: str | None = None,
+) -> tuple[PipelineConfig, PlatformConfig]:
     path = Path(config_path)
     if not path.exists():
         console.print(f"[red]Config file not found: {path}[/red]")
         raise typer.Exit(1)
-    return load_pipeline_config(path)
+    pipeline = load_pipeline_config(path)
+    platform = load_platform_config(Path(platform_config) if platform_config else None)
+    return pipeline, platform
 
 
 @app.command()
-def validate(config_path: str = typer.Argument(..., help="Path to pipeline YAML")) -> None:
+def validate(
+    config_path: str = typer.Argument(..., help="Path to pipeline YAML"),
+    platform_config: str | None = typer.Option(None, "--platform-config", help="Platform YAML"),
+) -> None:
     """Validate a pipeline configuration file."""
     try:
-        pipeline = _load(config_path)
+        pipeline, platform = _load(config_path, platform_config)
         console.print(f"[green]Valid[/green] — pipeline_id={pipeline.pipeline_id}")
         console.print(f"  source: {pipeline.source.source_type} → {pipeline.source.database}")
         console.print(f"  tables: {pipeline.source.tables}")
-        console.print(f"  kafka:  {pipeline.kafka.bootstrap_servers}")
+        console.print(f"  kafka:  {platform.kafka.bootstrap_servers}")
+        platform_source = platform_config or "(defaults)"
+        console.print(f"  platform config: {platform_source}")
         if pipeline.sinks:
             console.print(f"  sinks:  {len(pipeline.sinks)}")
             for s in pipeline.sinks:
@@ -56,14 +66,17 @@ def validate(config_path: str = typer.Argument(..., help="Path to pipeline YAML"
 
 
 @app.command()
-def deploy(config_path: str = typer.Argument(..., help="Path to pipeline YAML")) -> None:
+def deploy(
+    config_path: str = typer.Argument(..., help="Path to pipeline YAML"),
+    platform_config: str | None = typer.Option(None, "--platform-config", help="Platform YAML"),
+) -> None:
     """Validate config and register the Debezium connector."""
-    pipeline = _load(config_path)
+    pipeline, platform = _load(config_path, platform_config)
 
     async def _deploy() -> None:
-        async with DebeziumClient(pipeline.connector) as client:
+        async with DebeziumClient(platform.connector) as client:
             await client.wait_until_ready()
-            result = await client.register_connector(pipeline)
+            result = await client.register_connector(pipeline, platform)
             console.print(f"[green]Connector registered:[/green] {result.get('name', 'unknown')}")
 
     asyncio.run(_deploy())
@@ -71,12 +84,11 @@ def deploy(config_path: str = typer.Argument(..., help="Path to pipeline YAML"))
 
 @app.command()
 def health(
-    bootstrap_servers: str = typer.Option("localhost:9092", help="Kafka bootstrap servers"),
-    schema_registry_url: str = typer.Option("http://localhost:8081", help="Schema Registry URL"),
-    connect_url: str = typer.Option("http://localhost:8083", help="Kafka Connect URL"),
+    platform_config: str | None = typer.Option(None, "--platform-config", help="Platform YAML"),
 ) -> None:
     """Check health of all platform components."""
-    result = check_platform_health(bootstrap_servers, schema_registry_url, connect_url)
+    platform = load_platform_config(Path(platform_config) if platform_config else None)
+    result = check_platform_health(platform)
 
     table = Table(title="Platform Health")
     table.add_column("Component", style="cyan")
@@ -95,14 +107,15 @@ def health(
 @app.command()
 def consume(
     config_path: str = typer.Argument(..., help="Path to pipeline YAML"),
+    platform_config: str | None = typer.Option(None, "--platform-config", help="Platform YAML"),
 ) -> None:
     """Start a debug console consumer for CDC events."""
-    pipeline = _load(config_path)
+    pipeline, platform = _load(config_path, platform_config)
 
     from cdc_platform.streaming.topics import topics_for_pipeline
 
     cdc_topics = [
-        t for t in topics_for_pipeline(pipeline) if not t.endswith(".dlq")
+        t for t in topics_for_pipeline(pipeline, platform) if not t.endswith(".dlq")
     ]
 
     def handler(key: dict[str, Any] | None, value: dict[str, Any] | None, msg: Message) -> None:
@@ -116,7 +129,7 @@ def consume(
     console.print(f"[yellow]Consuming from:[/yellow] {cdc_topics}")
     consumer = CDCConsumer(
         topics=cdc_topics,
-        kafka_config=pipeline.kafka,
+        kafka_config=platform.kafka,
         handler=handler,
     )
     consumer.consume()
@@ -125,9 +138,10 @@ def consume(
 @app.command()
 def run(
     config_path: str = typer.Argument(..., help="Path to pipeline YAML"),
+    platform_config: str | None = typer.Option(None, "--platform-config", help="Platform YAML"),
 ) -> None:
     """Run the full CDC pipeline (source → Kafka → sinks)."""
-    pipeline = _load(config_path)
+    pipeline, platform = _load(config_path, platform_config)
 
     from cdc_platform.pipeline.runner import Pipeline
 
@@ -139,7 +153,7 @@ def run(
     else:
         console.print("  [dim]No sinks configured — events will be consumed only[/dim]")
 
-    runner = Pipeline(pipeline)
+    runner = Pipeline(pipeline, platform)
     try:
         runner.start()
     except KeyboardInterrupt:

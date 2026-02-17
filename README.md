@@ -98,15 +98,16 @@ cdc run examples/demo-config.yaml
 
 ## Configuration
 
-Pipelines are defined in YAML. Base templates provide sensible defaults; per-pipeline configs override only what's needed.
+Configuration is split into two files that enforce a strict boundary between **platform infrastructure** and **pipeline definitions**.
 
-The config is organized around two boundaries: **external connections** (the source database you're capturing from, and the sink destinations you're writing to) and **platform internals** (Kafka, Debezium, Schema Registry, DLQ behavior, and pipeline tuning). Users typically only configure `source`, `sinks`, and `pipeline_id` — the platform internals have production-ready defaults.
+### Pipeline config (`pipeline.yaml`)
+
+This is the only file users need to write. It defines _what_ to capture and _where_ to send it:
 
 ```yaml
 pipeline_id: demo
 topic_prefix: cdc
 
-# ── External: source database ──
 source:
   database: cdc_demo
   password: cdc_password
@@ -114,7 +115,6 @@ source:
     - public.customers
     - public.orders
 
-# ── External: sink destinations ──
 sinks:
   - sink_id: webhook-notifications
     sink_type: webhook
@@ -147,37 +147,39 @@ sinks:
       write_mode: append
       batch_size: 500
       auto_create_table: true
-
-# ── Platform internals (defaults are usually fine) ──
-# kafka:
-#   bootstrap_servers: localhost:9092
-#   schema_registry_url: http://localhost:8081
-#   group_id: cdc-platform
-# connector:
-#   connect_url: http://localhost:8083
-# max_buffered_messages: 1000
-# schema_monitor_interval_seconds: 30.0
-# stop_on_incompatible_schema: false
 ```
+
+Pipeline configs are validated strictly — including `kafka`, `connector`, or `dlq` keys in a pipeline YAML will raise a validation error. These belong in the platform config.
+
+### Platform config (`platform.yaml`)
+
+Configures the platform's managed infrastructure: Kafka, Debezium Connect, Schema Registry, DLQ behavior, and pipeline tuning. All fields have sensible defaults, so this file is **optional for local development**.
+
+```yaml
+kafka:
+  bootstrap_servers: kafka-prod:9092
+  schema_registry_url: http://registry-prod:8081
+
+connector:
+  connect_url: http://connect-prod:8083
+```
+
+Only specify fields that differ from the defaults. See `examples/platform.yaml` for a production override example.
 
 ### Environment variables
 
-Platform settings can also be configured via environment variables with the `CDC_` prefix:
+Secrets and environment-specific values use `${VAR}` or `${VAR:-default}` syntax in YAML files:
 
-```bash
-# External: source database
-CDC_SOURCE__HOST=localhost
-CDC_SOURCE__PORT=5432
-CDC_SOURCE__DATABASE=cdc_demo
+```yaml
+# In pipeline.yaml
+source:
+  database: ${CDC_SOURCE_DATABASE:-cdc_demo}
+  password: ${CDC_SOURCE_PASSWORD:-cdc_password}
 
-# Platform internals: Kafka, Schema Registry, Debezium Connect
-CDC_KAFKA__BOOTSTRAP_SERVERS=localhost:9092
-CDC_KAFKA__SCHEMA_REGISTRY_URL=http://localhost:8081
-CDC_CONNECTOR__CONNECT_URL=http://localhost:8083
-CDC_LOG_LEVEL=INFO
+# In platform.yaml
+kafka:
+  bootstrap_servers: ${CDC_KAFKA_BOOTSTRAP_SERVERS:-localhost:9092}
 ```
-
-See `.env.example` for the full template.
 
 ### Source configuration (external)
 
@@ -197,9 +199,9 @@ The source database that CDC captures changes from. The platform connects to it 
 
 ### Platform internals
 
-These configure the platform's managed infrastructure: Kafka, Debezium, Schema Registry, and the pipeline's processing behavior. The defaults are production-ready for most deployments.
+These configure the platform's managed infrastructure. They live in `platform.yaml` (not in pipeline configs). The defaults are production-ready for most deployments.
 
-**Kafka** (`kafka.*`) — The platform provisions topics, manages consumer groups, commits offsets, and monitors schemas through Kafka and the Schema Registry. These are infrastructure the platform owns, not external services it connects to.
+**Kafka** (`kafka.*`) — The platform provisions topics, manages consumer groups, commits offsets, and monitors schemas through Kafka and the Schema Registry.
 
 | Field                  | Default                       | Description                              |
 |------------------------|-------------------------------|------------------------------------------|
@@ -250,7 +252,7 @@ Sinks are the external systems the platform writes to. Each sink is independentl
 
 ### Retry configuration
 
-All sinks share a retry config:
+All sinks share a retry config (configured in `platform.yaml` as a global default):
 
 | Field                  | Default | Description                    |
 |------------------------|---------|--------------------------------|
@@ -263,18 +265,23 @@ All sinks share a retry config:
 ## CLI
 
 ```
-cdc validate <config>   Validate a pipeline configuration file
-cdc deploy <config>     Register the Debezium connector
-cdc health              Check health of Kafka, Schema Registry, and Connect
-cdc consume <config>    Start a debug console consumer for CDC events
-cdc run <config>        Run the full pipeline (source -> Kafka -> sinks)
+cdc validate <pipeline.yaml>                              Validate pipeline config
+cdc validate <pipeline.yaml> --platform-config prod.yaml  Validate with custom platform
+cdc deploy <pipeline.yaml>                                Register the Debezium connector
+cdc deploy <pipeline.yaml> --platform-config prod.yaml    Deploy with custom platform
+cdc health                                                Health with defaults
+cdc health --platform-config prod.yaml                    Health from platform config
+cdc consume <pipeline.yaml>                               Start a debug console consumer
+cdc consume <pipeline.yaml> --platform-config prod.yaml   Consume with custom platform
+cdc run <pipeline.yaml>                                   Run with default platform
+cdc run <pipeline.yaml> --platform-config prod.yaml       Run with custom platform
 ```
 
 ## Architecture
 
 ### Platform boundary
 
-The platform manages everything between the source database and the sink destinations:
+The platform manages everything between the source database and the sink destinations. The config separation reinforces this boundary: the **platform config** governs everything inside the boundary (Kafka, Debezium, Schema Registry, DLQ, tuning), while the **pipeline config** governs the external connections (source database, sink destinations).
 
 - **Kafka** — Topics are provisioned automatically from source table names. The platform owns the consumer group, offset lifecycle, and DLQ topics.
 - **Schema Registry** — Debezium publishes Avro schemas; the platform monitors them for version changes and compatibility.
@@ -441,7 +448,8 @@ src/cdc_platform/
 │   ├── loader.py                   # YAML + template loader
 │   ├── templates.py                # Template merging logic
 │   └── templates/
-│       └── postgres_cdc_v1.yaml    # Default PostgreSQL CDC template
+│       ├── platform.yaml           # Default platform infrastructure config
+│       └── postgres_cdc_v1.yaml    # Default PostgreSQL CDC pipeline template
 ├── sources/
 │   └── debezium/
 │       ├── client.py               # Async Kafka Connect REST client

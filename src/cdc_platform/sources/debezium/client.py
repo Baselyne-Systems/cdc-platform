@@ -13,7 +13,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from cdc_platform.config.models import ConnectorConfig, PipelineConfig
+from cdc_platform.config.models import ConnectorConfig, PipelineConfig, PlatformConfig
 from cdc_platform.sources.debezium.config import (
     build_postgres_connector_config,
     connector_name,
@@ -61,10 +61,12 @@ class DebeziumClient:
 
     # -- CRUD ------------------------------------------------------------------
 
-    async def register_connector(self, pipeline: PipelineConfig) -> dict[str, Any]:
+    async def register_connector(
+        self, pipeline: PipelineConfig, platform: PlatformConfig
+    ) -> dict[str, Any]:
         """Idempotent PUT to register (or update) a connector."""
         name = connector_name(pipeline)
-        config = build_postgres_connector_config(pipeline)
+        config = build_postgres_connector_config(pipeline, platform)
         resp = await self._client.put(
             f"/connectors/{name}/config",
             json=config,

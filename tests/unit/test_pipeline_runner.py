@@ -8,6 +8,7 @@ import pytest
 
 from cdc_platform.config.models import (
     PipelineConfig,
+    PlatformConfig,
     SinkConfig,
     SinkType,
     SourceConfig,
@@ -22,6 +23,10 @@ def _make_pipeline(*sink_cfgs: SinkConfig) -> PipelineConfig:
         source=SourceConfig(database="testdb", tables=["public.customers"]),
         sinks=list(sink_cfgs),
     )
+
+
+def _make_platform() -> PlatformConfig:
+    return PlatformConfig()
 
 
 def _webhook_sink_config(sink_id: str = "wh1", enabled: bool = True) -> SinkConfig:
@@ -49,7 +54,7 @@ def _mock_message(
 class TestPipelineDispatch:
     async def test_fan_out_to_multiple_sinks(self):
         config = _make_pipeline(_webhook_sink_config("wh1"), _webhook_sink_config("wh2"))
-        pipeline = Pipeline(config)
+        pipeline = Pipeline(config, _make_platform())
 
         sink1 = AsyncMock()
         sink1.sink_id = "wh1"
@@ -71,7 +76,7 @@ class TestPipelineDispatch:
 
     async def test_sink_failure_routes_to_dlq(self):
         config = _make_pipeline(_webhook_sink_config("wh1"))
-        pipeline = Pipeline(config)
+        pipeline = Pipeline(config, _make_platform())
 
         failing_sink = AsyncMock()
         failing_sink.sink_id = "wh1"
@@ -93,7 +98,7 @@ class TestPipelineDispatch:
 
     async def test_one_sink_failure_doesnt_block_others(self):
         config = _make_pipeline(_webhook_sink_config("wh1"), _webhook_sink_config("wh2"))
-        pipeline = Pipeline(config)
+        pipeline = Pipeline(config, _make_platform())
 
         failing_sink = AsyncMock()
         failing_sink.sink_id = "wh1"
@@ -114,7 +119,7 @@ class TestPipelineDispatch:
 
     async def test_stop_flushes_all_sinks(self):
         config = _make_pipeline(_webhook_sink_config("wh1"))
-        pipeline = Pipeline(config)
+        pipeline = Pipeline(config, _make_platform())
 
         sink = AsyncMock()
         sink.sink_id = "wh1"
@@ -144,7 +149,7 @@ class TestDispatchAsHandler:
     async def test_dispatch_can_be_used_as_async_handler(self):
         """_dispatch_to_sinks is passed directly as async_handler to consumer."""
         config = _make_pipeline(_webhook_sink_config("wh1"))
-        pipeline = Pipeline(config)
+        pipeline = Pipeline(config, _make_platform())
 
         sink = AsyncMock()
         sink.sink_id = "wh1"
@@ -169,7 +174,7 @@ def _mock_sink(sink_id: str, flushed: dict[tuple[str, int], int] | None = None) 
 class TestWatermarkCommit:
     async def test_watermark_committed_when_all_sinks_flushed(self):
         config = _make_pipeline(_webhook_sink_config("wh1"))
-        pipeline = Pipeline(config)
+        pipeline = Pipeline(config, _make_platform())
 
         mock_consumer = MagicMock()
         pipeline._consumer = mock_consumer
@@ -183,7 +188,7 @@ class TestWatermarkCommit:
 
     async def test_watermark_not_committed_twice(self):
         config = _make_pipeline(_webhook_sink_config("wh1"))
-        pipeline = Pipeline(config)
+        pipeline = Pipeline(config, _make_platform())
 
         mock_consumer = MagicMock()
         pipeline._consumer = mock_consumer
@@ -200,7 +205,7 @@ class TestWatermarkCommit:
         config = _make_pipeline(
             _webhook_sink_config("wh1"), _webhook_sink_config("wh2"),
         )
-        pipeline = Pipeline(config)
+        pipeline = Pipeline(config, _make_platform())
 
         mock_consumer = MagicMock()
         pipeline._consumer = mock_consumer
@@ -217,7 +222,7 @@ class TestWatermarkCommit:
         config = _make_pipeline(
             _webhook_sink_config("wh1"), _webhook_sink_config("wh2"),
         )
-        pipeline = Pipeline(config)
+        pipeline = Pipeline(config, _make_platform())
 
         mock_consumer = MagicMock()
         pipeline._consumer = mock_consumer
@@ -232,7 +237,7 @@ class TestWatermarkCommit:
 
     async def test_multiple_partitions_committed_independently(self):
         config = _make_pipeline(_webhook_sink_config("wh1"))
-        pipeline = Pipeline(config)
+        pipeline = Pipeline(config, _make_platform())
 
         mock_consumer = MagicMock()
         pipeline._consumer = mock_consumer
@@ -246,7 +251,7 @@ class TestWatermarkCommit:
 
     async def test_stop_sinks_commits_final_watermark(self):
         config = _make_pipeline(_webhook_sink_config("wh1"))
-        pipeline = Pipeline(config)
+        pipeline = Pipeline(config, _make_platform())
 
         mock_consumer = MagicMock()
         pipeline._consumer = mock_consumer
@@ -260,7 +265,7 @@ class TestWatermarkCommit:
 
     async def test_no_commit_when_consumer_is_none(self):
         config = _make_pipeline(_webhook_sink_config("wh1"))
-        pipeline = Pipeline(config)
+        pipeline = Pipeline(config, _make_platform())
         pipeline._consumer = None
 
         sink = _mock_sink("wh1", {("t", 0): 10})
@@ -271,7 +276,7 @@ class TestWatermarkCommit:
 
     async def test_no_commit_when_no_sinks(self):
         config = _make_pipeline()
-        pipeline = Pipeline(config)
+        pipeline = Pipeline(config, _make_platform())
 
         mock_consumer = MagicMock()
         pipeline._consumer = mock_consumer

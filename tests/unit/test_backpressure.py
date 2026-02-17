@@ -9,6 +9,7 @@ import pytest
 
 from cdc_platform.config.models import (
     PipelineConfig,
+    PlatformConfig,
     SinkConfig,
     SinkType,
     SourceConfig,
@@ -17,7 +18,7 @@ from cdc_platform.config.models import (
 from cdc_platform.pipeline.runner import Pipeline
 
 
-def _make_pipeline(max_buffered: int = 5) -> PipelineConfig:
+def _make_pipeline() -> PipelineConfig:
     return PipelineConfig(
         pipeline_id="test",
         source=SourceConfig(database="testdb", tables=["public.t"]),
@@ -28,8 +29,11 @@ def _make_pipeline(max_buffered: int = 5) -> PipelineConfig:
                 webhook=WebhookSinkConfig(url="http://example.com"),
             )
         ],
-        max_buffered_messages=max_buffered,
     )
+
+
+def _make_platform(max_buffered: int = 5) -> PlatformConfig:
+    return PlatformConfig(max_buffered_messages=max_buffered)
 
 
 def _mock_message(topic: str = "cdc.public.t", partition: int = 0, offset: int = 0) -> MagicMock:
@@ -62,8 +66,7 @@ class TestBackpressure:
         With maxsize=1, the worker pulls 1 item (blocked in slow write),
         so the queue can accept 1 more. The 3rd enqueue should block.
         """
-        config = _make_pipeline(max_buffered=1)
-        pipeline = Pipeline(config)
+        pipeline = Pipeline(_make_pipeline(), _make_platform(max_buffered=1))
         pipeline._sinks = [_slow_sink(delay=10)]  # very slow sink
 
         # First enqueue: worker pulls it immediately into slow write
@@ -88,8 +91,7 @@ class TestBackpressure:
 
     async def test_messages_drain_when_sink_catches_up(self):
         """Messages are processed once the sink becomes available."""
-        config = _make_pipeline(max_buffered=10)
-        pipeline = Pipeline(config)
+        pipeline = Pipeline(_make_pipeline(), _make_platform(max_buffered=10))
 
         processed = []
 
@@ -117,8 +119,7 @@ class TestBackpressure:
 
     async def test_queue_size_respects_max_buffered(self):
         """Queue maxsize matches config."""
-        config = _make_pipeline(max_buffered=42)
-        pipeline = Pipeline(config)
+        pipeline = Pipeline(_make_pipeline(), _make_platform(max_buffered=42))
         pipeline._sinks = [_slow_sink(delay=10)]
 
         msg = _mock_message()
@@ -132,8 +133,7 @@ class TestBackpressure:
 
     async def test_backpressure_does_not_drop_messages(self):
         """All enqueued messages are eventually dispatched."""
-        config = _make_pipeline(max_buffered=3)
-        pipeline = Pipeline(config)
+        pipeline = Pipeline(_make_pipeline(), _make_platform(max_buffered=3))
 
         offsets_written: list[int] = []
 

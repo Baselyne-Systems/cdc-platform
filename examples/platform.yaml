@@ -1,0 +1,10 @@
+# Override platform defaults for production.
+# Only specify fields that differ from the built-in defaults.
+# All fields are optional — omitted values use defaults.
+
+kafka:
+  bootstrap_servers: kafka-prod:9092
+  schema_registry_url: http://registry-prod:8081
+
+connector:
+  connect_url: http://connect-prod:8083

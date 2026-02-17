@@ -6,7 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from cdc_platform.config.loader import load_pipeline_config, resolve_env_vars
+from cdc_platform.config.loader import (
+    load_pipeline_config,
+    load_platform_config,
+    resolve_env_vars,
+)
 
 DEMO_CONFIG = Path(__file__).resolve().parents[2] / "examples" / "demo-config.yaml"
 
@@ -103,3 +107,24 @@ class TestLoadDemoConfig:
         config = load_pipeline_config(DEMO_CONFIG)
         enabled = [s.sink_id for s in config.sinks if s.enabled]
         assert enabled == ["webhook-notifications"]
+
+
+class TestLoadPlatformConfig:
+    def test_defaults_when_no_path(self):
+        """load_platform_config() with no path returns all defaults."""
+        cfg = load_platform_config()
+        assert cfg.kafka.bootstrap_servers == "localhost:9092"
+        assert cfg.connector.connect_url == "http://localhost:8083"
+        assert cfg.dlq.enabled is True
+        assert cfg.max_buffered_messages == 1000
+
+    def test_loads_from_yaml(self, tmp_path: Path):
+        """load_platform_config() loads overrides from a YAML file."""
+        yaml_content = "kafka:\n  bootstrap_servers: broker:29092\nmax_buffered_messages: 500\n"
+        config_file = tmp_path / "platform.yaml"
+        config_file.write_text(yaml_content)
+        cfg = load_platform_config(config_file)
+        assert cfg.kafka.bootstrap_servers == "broker:29092"
+        assert cfg.max_buffered_messages == 500
+        # non-overridden defaults preserved
+        assert cfg.connector.connect_url == "http://localhost:8083"

@@ -1,10 +1,10 @@
-"""Build Debezium connector JSON config from a PipelineConfig."""
+"""Build Debezium connector JSON config from pipeline + platform configs."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from cdc_platform.config.models import PipelineConfig
+from cdc_platform.config.models import PipelineConfig, PlatformConfig
 
 
 def connector_name(pipeline: PipelineConfig) -> str:
@@ -12,7 +12,9 @@ def connector_name(pipeline: PipelineConfig) -> str:
     return f"{pipeline.topic_prefix}-{pipeline.pipeline_id}"
 
 
-def build_postgres_connector_config(pipeline: PipelineConfig) -> dict[str, Any]:
+def build_postgres_connector_config(
+    pipeline: PipelineConfig, platform: PlatformConfig
+) -> dict[str, Any]:
     """Return the Debezium Postgres connector configuration dict."""
     src = pipeline.source
     name = connector_name(pipeline)
@@ -32,9 +34,9 @@ def build_postgres_connector_config(pipeline: PipelineConfig) -> dict[str, Any]:
         "table.include.list": ",".join(src.tables) if src.tables else "",
         # Schema Registry / Avro
         "key.converter": "io.confluent.connect.avro.AvroConverter",
-        "key.converter.schema.registry.url": pipeline.kafka.schema_registry_url,
+        "key.converter.schema.registry.url": platform.kafka.schema_registry_url,
         "value.converter": "io.confluent.connect.avro.AvroConverter",
-        "value.converter.schema.registry.url": pipeline.kafka.schema_registry_url,
+        "value.converter.schema.registry.url": platform.kafka.schema_registry_url,
         # Heartbeat
         "heartbeat.interval.ms": "10000",
         "heartbeat.action.query": (

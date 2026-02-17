@@ -14,7 +14,10 @@ class TestLoadTemplate:
     def test_loads_postgres_template(self):
         tpl = load_template("postgres_cdc_v1")
         assert tpl["source"]["source_type"] == "postgres"
-        assert "kafka" in tpl
+        assert "kafka" not in tpl
+        assert "connector" not in tpl
+        assert "dlq" not in tpl
+        assert "retry" not in tpl
 
     def test_missing_template_raises(self):
         with pytest.raises(FileNotFoundError, match="nonexistent"):
@@ -56,16 +59,18 @@ class TestBuildPipelineConfig:
         assert cfg.pipeline_id == "demo"
         assert cfg.source.source_type == SourceType.POSTGRES
         assert cfg.source.database == "mydb"
-        assert cfg.kafka.schema_registry_url == "http://localhost:8081"
 
-    def test_override_kafka(self):
+    def test_override_source(self):
         cfg = build_pipeline_config(
             {
                 "pipeline_id": "demo",
-                "source": {"database": "mydb", "password": "secret"},
-                "kafka": {"bootstrap_servers": "broker:29092"},
+                "source": {
+                    "database": "mydb",
+                    "password": "secret",
+                    "host": "db.prod",
+                },
             },
         )
-        assert cfg.kafka.bootstrap_servers == "broker:29092"
-        # other kafka defaults preserved
-        assert cfg.kafka.auto_offset_reset == "earliest"
+        assert cfg.source.host == "db.prod"
+        # other source defaults preserved
+        assert cfg.source.port == 5432

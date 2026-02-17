@@ -3,6 +3,7 @@
 from cdc_platform.config.models import (
     DLQConfig,
     PipelineConfig,
+    PlatformConfig,
     SourceConfig,
 )
 from cdc_platform.streaming.topics import (
@@ -35,7 +36,8 @@ class TestTopicsForPipeline:
                 tables=["public.customers", "public.orders"],
             ),
         )
-        topics = topics_for_pipeline(pipeline)
+        platform = PlatformConfig()
+        topics = topics_for_pipeline(pipeline, platform)
         assert topics == [
             "cdc.public.customers",
             "cdc.public.customers.dlq",
@@ -47,7 +49,7 @@ class TestTopicsForPipeline:
         pipeline = PipelineConfig(
             pipeline_id="test",
             source=SourceConfig(database="db", tables=["public.users"]),
-            dlq=DLQConfig(enabled=False),
         )
-        topics = topics_for_pipeline(pipeline)
+        platform = PlatformConfig(dlq=DLQConfig(enabled=False))
+        topics = topics_for_pipeline(pipeline, platform)
         assert topics == ["cdc.public.users"]

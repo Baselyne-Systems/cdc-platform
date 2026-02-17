@@ -5,7 +5,7 @@ from __future__ import annotations
 import structlog
 from confluent_kafka.admin import AdminClient, NewTopic
 
-from cdc_platform.config.models import PipelineConfig
+from cdc_platform.config.models import PipelineConfig, PlatformConfig
 
 logger = structlog.get_logger()
 
@@ -20,15 +20,17 @@ def dlq_topic_name(source_topic: str, suffix: str = "dlq") -> str:
     return f"{source_topic}.{suffix}"
 
 
-def topics_for_pipeline(pipeline: PipelineConfig) -> list[str]:
+def topics_for_pipeline(
+    pipeline: PipelineConfig, platform: PlatformConfig
+) -> list[str]:
     """Return all CDC + DLQ topics for a pipeline."""
     topics: list[str] = []
     for table in pipeline.source.tables:
         schema, tbl = table.split(".")
         t = cdc_topic_name(pipeline.topic_prefix, schema, tbl)
         topics.append(t)
-        if pipeline.dlq.enabled:
-            topics.append(dlq_topic_name(t, pipeline.dlq.topic_suffix))
+        if platform.dlq.enabled:
+            topics.append(dlq_topic_name(t, platform.dlq.topic_suffix))
     return topics
 
 

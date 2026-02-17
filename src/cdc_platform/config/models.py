@@ -7,7 +7,6 @@ from enum import StrEnum
 from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class SourceType(StrEnum):
@@ -183,39 +182,24 @@ class SinkConfig(BaseModel):
         return self
 
 
-class PipelineConfig(BaseModel):
-    """Top-level pipeline configuration — composes all sub-configs."""
+class PipelineConfig(BaseModel, extra="forbid"):
+    """Per-pipeline configuration — source database and sink destinations."""
 
     pipeline_id: str
     topic_prefix: TopicPrefix = "cdc"
     source: SourceConfig
+    sinks: list[SinkConfig] = Field(default_factory=list)
+
+
+class PlatformConfig(BaseModel):
+    """Platform infrastructure configuration — Kafka, Debezium, DLQ, tuning."""
+
     kafka: KafkaConfig = KafkaConfig()
     connector: ConnectorConfig = ConnectorConfig()
     dlq: DLQConfig = DLQConfig()
     retry: RetryConfig = RetryConfig()
-    sinks: list[SinkConfig] = Field(default_factory=list)
-
-    # Backpressure: max messages queued before consumer pauses
     max_buffered_messages: int = 1000
-    # 0 = auto (one task per assigned partition)
     partition_concurrency: int = 0
-    # How often to poll Schema Registry for version changes
     schema_monitor_interval_seconds: float = 30.0
-    # How often to log consumer lag
     lag_monitor_interval_seconds: float = 15.0
-    # Halt pipeline on backward-incompatible schema change
     stop_on_incompatible_schema: bool = False
-
-
-class PlatformSettings(BaseSettings):
-    """Environment-driven platform settings (CDC_ prefix)."""
-
-    model_config = SettingsConfigDict(
-        env_prefix="CDC_",
-        env_nested_delimiter="__",
-    )
-
-    log_level: str = "INFO"
-    source: SourceConfig = SourceConfig(database="cdc_demo")
-    kafka: KafkaConfig = KafkaConfig()
-    connector: ConnectorConfig = ConnectorConfig()

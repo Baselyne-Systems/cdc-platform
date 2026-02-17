@@ -9,7 +9,7 @@ from typing import Any
 import structlog
 from confluent_kafka import Message
 
-from cdc_platform.config.models import PipelineConfig
+from cdc_platform.config.models import PipelineConfig, PlatformConfig
 from cdc_platform.observability.metrics import LagMonitor
 from cdc_platform.sinks.base import SinkConnector
 from cdc_platform.sinks.factory import create_sink
@@ -31,8 +31,9 @@ class Pipeline:
     Per-partition bounded queues provide backpressure and parallel consumption.
     """
 
-    def __init__(self, config: PipelineConfig) -> None:
-        self._config = config
+    def __init__(self, pipeline: PipelineConfig, platform: PlatformConfig) -> None:
+        self._pipeline = pipeline
+        self._platform = platform
         self._sinks: list[SinkConnector] = []
         self._consumer: CDCConsumer | None = None
         self._dlq: DLQHandler | None = None
@@ -48,22 +49,22 @@ class Pipeline:
 
     async def _start_async(self) -> None:
         # 1. Ensure topics exist
-        all_topics = topics_for_pipeline(self._config)
-        ensure_topics(self._config.kafka.bootstrap_servers, all_topics)
+        all_topics = topics_for_pipeline(self._pipeline, self._platform)
+        ensure_topics(self._platform.kafka.bootstrap_servers, all_topics)
 
         # 2. Deploy Debezium connector
-        async with DebeziumClient(self._config.connector) as client:
+        async with DebeziumClient(self._platform.connector) as client:
             await client.wait_until_ready()
-            await client.register_connector(self._config)
-            logger.info("pipeline.connector_deployed", pipeline_id=self._config.pipeline_id)
+            await client.register_connector(self._pipeline, self._platform)
+            logger.info("pipeline.connector_deployed", pipeline_id=self._pipeline.pipeline_id)
 
         # 3. Init DLQ handler
-        if self._config.dlq.enabled:
-            producer = create_producer(self._config.kafka)
-            self._dlq = DLQHandler(producer, self._config.dlq)
+        if self._platform.dlq.enabled:
+            producer = create_producer(self._platform.kafka)
+            self._dlq = DLQHandler(producer, self._platform.dlq)
 
         # 4. Start enabled sinks
-        for sink_cfg in self._config.sinks:
+        for sink_cfg in self._pipeline.sinks:
             if not sink_cfg.enabled:
                 logger.info("pipeline.sink_disabled", sink_id=sink_cfg.sink_id)
                 continue
@@ -76,35 +77,35 @@ class Pipeline:
         cdc_topics = [t for t in all_topics if not t.endswith(".dlq")]
         self._consumer = CDCConsumer(
             topics=cdc_topics,
-            kafka_config=self._config.kafka,
+            kafka_config=self._platform.kafka,
             async_handler=self._enqueue,
-            dlq_config=self._config.dlq,
+            dlq_config=self._platform.dlq,
             on_assign=self._on_partitions_assigned,
             on_revoke=self._on_partitions_revoked,
         )
 
         # 6. Start schema monitor
         self._schema_monitor = SchemaMonitor(
-            registry_url=self._config.kafka.schema_registry_url,
+            registry_url=self._platform.kafka.schema_registry_url,
             topics=cdc_topics,
-            interval=self._config.schema_monitor_interval_seconds,
-            stop_on_incompatible=self._config.stop_on_incompatible_schema,
+            interval=self._platform.schema_monitor_interval_seconds,
+            stop_on_incompatible=self._platform.stop_on_incompatible_schema,
             on_incompatible=self.stop,
         )
         await self._schema_monitor.start()
 
         # 7. Start lag monitor
         self._lag_monitor = LagMonitor(
-            bootstrap_servers=self._config.kafka.bootstrap_servers,
-            group_id=self._config.kafka.group_id,
+            bootstrap_servers=self._platform.kafka.bootstrap_servers,
+            group_id=self._platform.kafka.group_id,
             topics=cdc_topics,
-            interval=self._config.lag_monitor_interval_seconds,
+            interval=self._platform.lag_monitor_interval_seconds,
         )
         await self._lag_monitor.start()
 
         logger.info(
             "pipeline.started",
-            pipeline_id=self._config.pipeline_id,
+            pipeline_id=self._pipeline.pipeline_id,
             sinks=[s.sink_id for s in self._sinks],
             topics=cdc_topics,
         )
@@ -125,7 +126,7 @@ class Pipeline:
         tp = (msg.topic(), msg.partition())
         queue = self._partition_queues.get(tp)
         if queue is None:
-            queue = asyncio.Queue(maxsize=self._config.max_buffered_messages)
+            queue = asyncio.Queue(maxsize=self._platform.max_buffered_messages)
             self._partition_queues[tp] = queue
             self._partition_workers[tp] = asyncio.create_task(self._partition_loop(tp, queue))
         await queue.put((key, value, msg))
@@ -145,7 +146,7 @@ class Pipeline:
         for tp in partitions:
             if tp not in self._partition_queues:
                 queue: asyncio.Queue[tuple[Any, Any, Message]] = asyncio.Queue(
-                    maxsize=self._config.max_buffered_messages
+                    maxsize=self._platform.max_buffered_messages
                 )
                 self._partition_queues[tp] = queue
                 self._partition_workers[tp] = asyncio.create_task(
@@ -280,8 +281,8 @@ class Pipeline:
         try:
             from cdc_platform.sources.debezium.config import connector_name
 
-            name = connector_name(self._config)
-            async with DebeziumClient(self._config.connector) as client:
+            name = connector_name(self._pipeline)
+            async with DebeziumClient(self._platform.connector) as client:
                 source_status = await client.get_connector_status(name)
         except Exception as exc:
             source_status = {"status": "error", "error": str(exc)}
@@ -289,7 +290,7 @@ class Pipeline:
         lag_data = self._lag_monitor.latest_lag if self._lag_monitor else []
 
         return {
-            "pipeline_id": self._config.pipeline_id,
+            "pipeline_id": self._pipeline.pipeline_id,
             "source": source_status,
             "sinks": sink_health,
             "consumer_lag": [

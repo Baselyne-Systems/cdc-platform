@@ -4,7 +4,12 @@ import httpx
 import pytest
 import respx
 
-from cdc_platform.config.models import ConnectorConfig, PipelineConfig, SourceConfig
+from cdc_platform.config.models import (
+    ConnectorConfig,
+    PipelineConfig,
+    PlatformConfig,
+    SourceConfig,
+)
 from cdc_platform.sources.debezium.client import ConnectError, DebeziumClient
 from cdc_platform.sources.debezium.config import (
     build_postgres_connector_config,
@@ -27,6 +32,11 @@ def pipeline() -> PipelineConfig:
 
 
 @pytest.fixture
+def platform() -> PlatformConfig:
+    return PlatformConfig()
+
+
+@pytest.fixture
 def config() -> ConnectorConfig:
     return ConnectorConfig(connect_url=CONNECT_URL)
 
@@ -35,8 +45,10 @@ class TestConnectorConfig:
     def test_connector_name(self, pipeline: PipelineConfig):
         assert connector_name(pipeline) == "cdc-test-pg"
 
-    def test_build_config_includes_avro(self, pipeline: PipelineConfig):
-        cfg = build_postgres_connector_config(pipeline)
+    def test_build_config_includes_avro(
+        self, pipeline: PipelineConfig, platform: PlatformConfig
+    ):
+        cfg = build_postgres_connector_config(pipeline, platform)
         assert cfg["key.converter"] == "io.confluent.connect.avro.AvroConverter"
         assert cfg["plugin.name"] == "pgoutput"
         assert cfg["database.dbname"] == "testdb"
@@ -47,21 +59,27 @@ class TestDebeziumClient:
     @pytest.mark.asyncio
     @respx.mock
     async def test_register_connector_success(
-        self, pipeline: PipelineConfig, config: ConnectorConfig
+        self,
+        pipeline: PipelineConfig,
+        platform: PlatformConfig,
+        config: ConnectorConfig,
     ):
         name = connector_name(pipeline)
         route = respx.put(f"{CONNECT_URL}/connectors/{name}/config").mock(
             return_value=httpx.Response(201, json={"name": name, "config": {}})
         )
         async with DebeziumClient(config) as client:
-            result = await client.register_connector(pipeline)
+            result = await client.register_connector(pipeline, platform)
         assert route.called
         assert result["name"] == name
 
     @pytest.mark.asyncio
     @respx.mock
     async def test_register_connector_failure_raises(
-        self, pipeline: PipelineConfig, config: ConnectorConfig
+        self,
+        pipeline: PipelineConfig,
+        platform: PlatformConfig,
+        config: ConnectorConfig,
     ):
         name = connector_name(pipeline)
         respx.put(f"{CONNECT_URL}/connectors/{name}/config").mock(
@@ -69,7 +87,7 @@ class TestDebeziumClient:
         )
         async with DebeziumClient(config) as client:
             with pytest.raises(ConnectError, match="400"):
-                await client.register_connector(pipeline)
+                await client.register_connector(pipeline, platform)
 
     @pytest.mark.asyncio
     @respx.mock

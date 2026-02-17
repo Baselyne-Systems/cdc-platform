@@ -9,6 +9,7 @@ import pytest
 
 from cdc_platform.config.models import (
     PipelineConfig,
+    PlatformConfig,
     SinkConfig,
     SinkType,
     SourceConfig,
@@ -28,8 +29,11 @@ def _make_pipeline() -> PipelineConfig:
                 webhook=WebhookSinkConfig(url="http://example.com"),
             )
         ],
-        max_buffered_messages=100,
     )
+
+
+def _make_platform() -> PlatformConfig:
+    return PlatformConfig(max_buffered_messages=100)
 
 
 def _mock_message(topic: str = "cdc.public.t", partition: int = 0, offset: int = 0) -> MagicMock:
@@ -60,7 +64,7 @@ def _tracking_sink() -> tuple[AsyncMock, list[tuple[int, int]]]:
 class TestPartitionWorker:
     async def test_each_partition_gets_own_worker(self):
         """Enqueueing messages from different partitions creates separate workers."""
-        pipeline = Pipeline(_make_pipeline())
+        pipeline = Pipeline(_make_pipeline(), _make_platform())
         sink, _ = _tracking_sink()
         pipeline._sinks = [sink]
 
@@ -78,7 +82,7 @@ class TestPartitionWorker:
 
     async def test_partition_assignment_creates_queue_and_worker(self):
         """on_assign callback creates queues and workers for new partitions."""
-        pipeline = Pipeline(_make_pipeline())
+        pipeline = Pipeline(_make_pipeline(), _make_platform())
         pipeline._sinks = [AsyncMock(sink_id="wh1")]
 
         pipeline._on_partitions_assigned([("t", 0), ("t", 1)])
@@ -93,7 +97,7 @@ class TestPartitionWorker:
 
     async def test_partition_revocation_cancels_worker(self):
         """on_revoke cancels workers and removes queues."""
-        pipeline = Pipeline(_make_pipeline())
+        pipeline = Pipeline(_make_pipeline(), _make_platform())
         pipeline._sinks = [AsyncMock(sink_id="wh1")]
 
         pipeline._on_partitions_assigned([("t", 0), ("t", 1)])
@@ -114,7 +118,7 @@ class TestPartitionWorker:
 
     async def test_slow_partition_does_not_block_other(self):
         """Slow processing on partition 0 doesn't delay partition 1."""
-        pipeline = Pipeline(_make_pipeline())
+        pipeline = Pipeline(_make_pipeline(), _make_platform())
 
         p0_events: list[int] = []
         p1_events: list[int] = []
@@ -154,8 +158,7 @@ class TestPartitionWorker:
 
     async def test_watermark_commit_still_partition_aware(self):
         """Watermark commits use per-partition min across sinks (unchanged behavior)."""
-        config = _make_pipeline()
-        pipeline = Pipeline(config)
+        pipeline = Pipeline(_make_pipeline(), _make_platform())
 
         mock_consumer = MagicMock()
         pipeline._consumer = mock_consumer

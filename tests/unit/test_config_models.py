@@ -7,6 +7,7 @@ from cdc_platform.config.models import (
     DLQConfig,
     KafkaConfig,
     PipelineConfig,
+    PlatformConfig,
     SourceConfig,
     SourceType,
 )
@@ -60,7 +61,8 @@ class TestPipelineConfig:
             source=SourceConfig(database="testdb"),
         )
         assert cfg.pipeline_id == "test-pipeline"
-        assert cfg.kafka.bootstrap_servers == "localhost:9092"
+        assert cfg.topic_prefix == "cdc"
+        assert cfg.sinks == []
 
     def test_invalid_topic_prefix(self):
         with pytest.raises(ValidationError, match="topic_prefix"):
@@ -69,3 +71,33 @@ class TestPipelineConfig:
                 topic_prefix="123invalid",
                 source=SourceConfig(database="testdb"),
             )
+
+    def test_rejects_platform_fields(self):
+        """Pipeline YAML with kafka/connector/dlq keys raises validation error."""
+        with pytest.raises(ValidationError):
+            PipelineConfig(
+                pipeline_id="test",
+                source=SourceConfig(database="testdb"),
+                kafka={"bootstrap_servers": "broker:9092"},
+            )
+
+
+class TestPlatformConfig:
+    def test_all_defaults(self):
+        cfg = PlatformConfig()
+        assert cfg.kafka.bootstrap_servers == "localhost:9092"
+        assert cfg.connector.connect_url == "http://localhost:8083"
+        assert cfg.dlq.enabled is True
+        assert cfg.max_buffered_messages == 1000
+        assert cfg.schema_monitor_interval_seconds == 30.0
+        assert cfg.stop_on_incompatible_schema is False
+
+    def test_override_kafka(self):
+        cfg = PlatformConfig(kafka=KafkaConfig(bootstrap_servers="broker:29092"))
+        assert cfg.kafka.bootstrap_servers == "broker:29092"
+        assert cfg.kafka.auto_offset_reset == "earliest"
+
+    def test_override_tuning(self):
+        cfg = PlatformConfig(max_buffered_messages=500, stop_on_incompatible_schema=True)
+        assert cfg.max_buffered_messages == 500
+        assert cfg.stop_on_incompatible_schema is True

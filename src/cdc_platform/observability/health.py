@@ -9,6 +9,8 @@ import httpx
 import structlog
 from confluent_kafka.admin import AdminClient
 
+from cdc_platform.config.models import PlatformConfig
+
 logger = structlog.get_logger()
 
 
@@ -87,16 +89,13 @@ def check_connect(url: str) -> ComponentHealth:
         )
 
 
-def check_platform_health(
-    bootstrap_servers: str = "localhost:9092",
-    schema_registry_url: str = "http://localhost:8081",
-    connect_url: str = "http://localhost:8083",
-) -> PlatformHealth:
+def check_platform_health(platform: PlatformConfig | None = None) -> PlatformHealth:
     """Run all health checks and return aggregated result."""
+    cfg = platform or PlatformConfig()
     return PlatformHealth(
         components=[
-            check_kafka(bootstrap_servers),
-            check_schema_registry(schema_registry_url),
-            check_connect(connect_url),
+            check_kafka(cfg.kafka.bootstrap_servers),
+            check_schema_registry(cfg.kafka.schema_registry_url),
+            check_connect(cfg.connector.connect_url),
         ]
     )
