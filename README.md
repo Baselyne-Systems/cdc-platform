@@ -477,6 +477,8 @@ src/cdc_platform/
 
 docker/
 ├── docker-compose.yml              # Full local stack
+├── connect/
+│   └── Dockerfile                  # Custom Kafka Connect image with Confluent Avro converter JARs
 └── postgres/
     └── init.sql                    # Demo schema (customers + orders)
 
@@ -498,9 +500,20 @@ uv sync --extra dev
 ### Running tests
 
 ```bash
-make test-unit               # Unit tests only
-make test-integration        # Integration tests (requires `make up`)
+make test-unit               # Unit tests only (no Docker required)
+make test-integration        # Integration tests (manages Docker lifecycle automatically)
 ```
+
+**Unit tests** run without any external services — all dependencies are mocked.
+
+**Integration tests** manage the full Docker Compose stack automatically. The test session fixture starts all services (`docker compose up -d`), waits for health checks, registers a Debezium connector, runs the tests, and tears everything down (`docker compose down -v`). You do **not** need to run `make up` first — doing so would cause port conflicts.
+
+The integration suite exercises the real Avro serialization path end-to-end: Debezium captures WAL changes, serializes with `AvroConverter` via the Confluent Schema Registry, and the tests consume with `AvroDeserializer`. This ensures the same code path used in production is tested.
+
+Prerequisites for integration tests:
+- Docker and Docker Compose installed and running
+- No services already bound to ports 5432, 9092, 8081, 8083, or 8080
+- First run may be slow while the custom Connect image builds (downloads ~12 Confluent Avro converter JARs)
 
 ### Linting and formatting
 
@@ -512,10 +525,12 @@ make fmt                     # ruff format + autofix
 ### Docker stack
 
 ```bash
-make up                      # Start all services
+make up                      # Start all services (builds custom Connect image on first run)
 make down                    # Stop and remove containers
 make clean                   # Full cleanup (volumes + orphans)
 ```
+
+The Connect service uses a custom Docker image (`docker/connect/Dockerfile`) that extends `quay.io/debezium/connect:2.7` with Confluent Avro converter JARs. The stock Debezium image only ships JSON converters, but the platform uses Avro serialization with Schema Registry. The image is built automatically by `docker compose up` via the `build: ./connect` directive.
 
 ### Adding a new sink
 

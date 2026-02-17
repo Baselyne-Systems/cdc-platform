@@ -32,7 +32,7 @@ def build_postgres_connector_config(
         "slot.name": src.slot_name,
         "snapshot.mode": src.snapshot_mode.value,
         "table.include.list": ",".join(src.tables) if src.tables else "",
-        # Schema Registry / Avro
+        # Converters — Avro with Schema Registry
         "key.converter": "io.confluent.connect.avro.AvroConverter",
         "key.converter.schema.registry.url": platform.kafka.schema_registry_url,
         "value.converter": "io.confluent.connect.avro.AvroConverter",

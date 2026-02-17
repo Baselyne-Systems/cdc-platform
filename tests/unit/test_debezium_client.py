@@ -45,7 +45,7 @@ class TestConnectorConfig:
     def test_connector_name(self, pipeline: PipelineConfig):
         assert connector_name(pipeline) == "cdc-test-pg"
 
-    def test_build_config_includes_avro(
+    def test_build_config_includes_avro_converter(
         self, pipeline: PipelineConfig, platform: PlatformConfig
     ):
         cfg = build_postgres_connector_config(pipeline, platform)

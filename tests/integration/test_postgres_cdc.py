@@ -13,15 +13,12 @@ from confluent_kafka.schema_registry.avro import AvroDeserializer
 from confluent_kafka.serialization import MessageField, SerializationContext
 
 
-def _consume_messages(
+def _make_avro_consumer(
     topic: str,
-    *,
-    timeout: float = 30.0,
-    max_messages: int = 10,
-) -> list[dict[str, Any]]:
-    """Consume up to max_messages from a topic with Avro deserialization."""
-    registry = SchemaRegistryClient({"url": "http://localhost:8081"})
-    deser = AvroDeserializer(registry)
+) -> tuple[Consumer, AvroDeserializer]:
+    """Create a Kafka consumer and Avro deserializer for the given topic."""
+    sr_client = SchemaRegistryClient({"url": "http://localhost:8081"})
+    deserializer = AvroDeserializer(sr_client)
     consumer = Consumer(
         {
             "bootstrap.servers": "localhost:9092",
@@ -31,6 +28,17 @@ def _consume_messages(
         }
     )
     consumer.subscribe([topic])
+    return consumer, deserializer
+
+
+def _consume_messages(
+    topic: str,
+    *,
+    timeout: float = 30.0,
+    max_messages: int = 10,
+) -> list[dict[str, Any]]:
+    """Consume up to max_messages from a topic with Avro deserialization."""
+    consumer, deserializer = _make_avro_consumer(topic)
     messages: list[dict[str, Any]] = []
     deadline = time.time() + timeout
     try:
@@ -39,12 +47,16 @@ def _consume_messages(
             if msg is None:
                 continue
             if msg.error():
-                if msg.error().code() == KafkaError._PARTITION_EOF:
+                if msg.error().code() in (
+                    KafkaError._PARTITION_EOF,
+                    KafkaError.UNKNOWN_TOPIC_OR_PART,
+                ):
                     continue
                 raise Exception(msg.error())
-            ctx = SerializationContext(topic, MessageField.VALUE)
-            value = deser(msg.value(), ctx)
-            if value is not None:
+            raw = msg.value()
+            if raw is not None:
+                ctx = SerializationContext(topic, MessageField.VALUE)
+                value = deserializer(raw, ctx)
                 messages.append(value)
     finally:
         consumer.close()
@@ -63,9 +75,7 @@ class TestPostgresCDC:
         emails = {m.get("after", {}).get("email") for m in messages if m.get("after")}
         assert "alice@example.com" in emails
 
-    def test_insert_captured(
-        self, docker_services, _register_connector, pg_dsn: str
-    ):
+    def test_insert_captured(self, docker_services, _register_connector, pg_dsn: str):
         """A live INSERT should produce a CDC event."""
         conn = psycopg2.connect(pg_dsn)
         conn.autocommit = True
@@ -80,9 +90,7 @@ class TestPostgresCDC:
         emails = {m.get("after", {}).get("email") for m in messages if m.get("after")}
         assert "charlie@example.com" in emails
 
-    def test_update_captured(
-        self, docker_services, _register_connector, pg_dsn: str
-    ):
+    def test_update_captured(self, docker_services, _register_connector, pg_dsn: str):
         """An UPDATE should produce a CDC event with before/after."""
         conn = psycopg2.connect(pg_dsn)
         conn.autocommit = True
@@ -104,7 +112,9 @@ class TestPostgresCDC:
         conn = psycopg2.connect(pg_dsn)
         conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM customers WHERE email = %s", ("charlie@example.com",))
+            cur.execute(
+                "DELETE FROM customers WHERE email = %s", ("charlie@example.com",)
+            )
         conn.close()
 
         messages = _consume_messages("cdc.public.customers", timeout=30)

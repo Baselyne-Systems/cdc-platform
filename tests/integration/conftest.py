@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import time
 
 import httpx
 import pytest
 from confluent_kafka.admin import AdminClient
+
+from cdc_platform.config.models import (
+    KafkaConfig,
+    PipelineConfig,
+    PlatformConfig,
+    SourceConfig,
+)
+from cdc_platform.sources.debezium.client import DebeziumClient
+from cdc_platform.sources.debezium.config import connector_name
 
 COMPOSE_FILE = "docker/docker-compose.yml"
 
@@ -65,13 +75,24 @@ def pg_dsn() -> str:
 
 
 @pytest.fixture(scope="session")
-def pipeline():
-    """Shared pipeline config for integration tests."""
-    from cdc_platform.config.models import PipelineConfig, SourceConfig
+def platform() -> PlatformConfig:
+    """Shared platform config for integration tests.
 
+    The Schema Registry URL uses the Docker-internal hostname because the
+    connector config is sent to Kafka Connect which runs inside Docker.
+    """
+    return PlatformConfig(
+        kafka=KafkaConfig(schema_registry_url="http://schema-registry:8081"),
+    )
+
+
+@pytest.fixture(scope="session")
+def pipeline() -> PipelineConfig:
+    """Shared pipeline config for integration tests."""
     return PipelineConfig(
         pipeline_id="integration-test",
         source=SourceConfig(
+            host="postgres",
             database="cdc_demo",
             password="cdc_password",
             tables=["public.customers"],
@@ -80,22 +101,29 @@ def pipeline():
 
 
 @pytest.fixture(scope="session")
-def _register_connector(docker_services, pipeline):
+def _register_connector(docker_services, pipeline, platform):
     """Register the Debezium connector once for the entire session."""
-    import asyncio
-
-    from cdc_platform.sources.debezium.client import DebeziumClient
-    from cdc_platform.sources.debezium.config import connector_name
 
     async def _register():
-        async with DebeziumClient(pipeline.connector) as client:
+        async with DebeziumClient(platform.connector) as client:
             await client.wait_until_ready()
-            await client.register_connector(pipeline)
+            await client.register_connector(pipeline, platform)
             name = connector_name(pipeline)
             for _ in range(30):
-                status = await client.get_connector_status(name)
-                if status.get("connector", {}).get("state") == "RUNNING":
+                try:
+                    status = await client.get_connector_status(name)
+                except Exception:
+                    # Connector may not be visible yet (404)
+                    await asyncio.sleep(2)
+                    continue
+                tasks = status.get("tasks", [])
+                if tasks and tasks[0].get("state") == "RUNNING":
                     return
+                if tasks and tasks[0].get("state") == "FAILED":
+                    trace = tasks[0].get("trace", "")
+                    raise RuntimeError(
+                        f"Connector task FAILED:\n{trace[:500]}"
+                    )
                 await asyncio.sleep(2)
             raise TimeoutError("Connector did not reach RUNNING state")
 

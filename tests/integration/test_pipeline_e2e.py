@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
@@ -13,7 +11,6 @@ import pytest
 
 from cdc_platform.config.models import (
     PipelineConfig,
-    PostgresSinkConfig,
     SinkConfig,
     SinkType,
     SourceConfig,
