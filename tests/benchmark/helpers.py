@@ -332,10 +332,16 @@ class LatencyTracker:
 class InstrumentedSink:
     """Decorator for SinkConnector that measures write latency."""
 
-    def __init__(self, inner: SinkConnector, expected_count: int | None = None) -> None:
+    def __init__(
+        self,
+        inner: SinkConnector,
+        expected_count: int | None = None,
+        track_e2e_latency: bool = True,
+    ) -> None:
         self.inner = inner
         self.latency = LatencyTracker()  # Sink write latency
         self.e2e_latency = LatencyTracker()  # Producer -> Sink latency
+        self._track_e2e = track_e2e_latency
         self.write_count = 0
         self.expected_count = expected_count
         self.done_event = asyncio.Event()
@@ -378,8 +384,8 @@ class InstrumentedSink:
         self.latency.add(write_elapsed_ms)
         self.write_count += 1
 
-        # Track E2E latency if value has ts_ms
-        if value and "ts_ms" in value:
+        # Track E2E latency if enabled and value has ts_ms
+        if self._track_e2e and value and "ts_ms" in value:
             # Prefer top-level ts_ms, fall back to source.ts_ms
             prod_ts = value.get("ts_ms") or value.get("source", {}).get("ts_ms")
             if prod_ts:
@@ -624,7 +630,7 @@ class BenchmarkReport:
                         f"{r.latency.p95:.2f}",
                         f"{r.latency.p99:.2f}",
                     )
-                if r.e2e_latency:
+                if r.e2e_latency and r.e2e_latency.count > 0:
                     lat_table.add_row(
                         "",
                         "End-to-End",
@@ -678,27 +684,19 @@ async def consume_with_sink(
         handler=sink_handler,
     )
 
-    # If sink is CountingSink and already finished (rare race), checks done
-    if isinstance(sink, CountingSink) and sink.done_event.is_set():
-        pass
-    else:
-        consume_task = asyncio.create_task(consumer.consume())
+    consume_task = asyncio.create_task(consumer.consume())
 
-        try:
-            if isinstance(sink, CountingSink):
-                await asyncio.wait_for(sink.done_event.wait(), timeout=timeout)
-            elif isinstance(sink, InstrumentedSink) and sink.done_event:
-                # If InstrumentedSink has a done_event, use it (we added this)
-                await asyncio.wait_for(sink.done_event.wait(), timeout=timeout)
-            else:
-                # Generic wait
-                await asyncio.sleep(timeout)
-        except TimeoutError:
-            logger.warning("benchmark.consume.timeout", expected=expected_count)
-        finally:
-            consumer.stop()
-            await consume_task
-            await sink.flush()
+    try:
+        if isinstance(sink, (InstrumentedSink, CountingSink)):
+            await asyncio.wait_for(sink.done_event.wait(), timeout=timeout)
+        else:
+            await asyncio.sleep(timeout)
+    except TimeoutError:
+        logger.warning("benchmark.consume.timeout", expected=expected_count)
+    finally:
+        consumer.stop()
+        await consume_task
+        await sink.flush()
 
     elapsed = time.perf_counter() - start
 
@@ -714,7 +712,7 @@ async def consume_with_sink(
     elif isinstance(sink, InstrumentedSink):
         count = sink.write_count
         latency = sink.latency
-        e2e = sink.e2e_latency
+        e2e = sink.e2e_latency if sink._track_e2e else None
         if sink.first_write_time and sink.last_write_time:
             conn_rebal_dur = sink.first_write_time - start
             active_dur = sink.last_write_time - sink.first_write_time

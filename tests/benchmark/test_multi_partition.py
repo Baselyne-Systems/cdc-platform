@@ -29,7 +29,7 @@ class TestMultiPartition:
         benchmark_report: Any,
     ) -> None:
         """Measure throughput for N partitions."""
-        message_count = 100
+        message_count = 5_000
         topic_name = f"bench.partitions.{num_partitions}.{uuid.uuid4().hex[:8]}"
 
         logger.info(
@@ -57,7 +57,9 @@ class TestMultiPartition:
 
         # 3. Consume
         real_sink = CountingSink(expected=message_count)
-        sink = InstrumentedSink(real_sink, expected_count=message_count)
+        sink = InstrumentedSink(
+            real_sink, expected_count=message_count, track_e2e_latency=False
+        )
 
         result = await consume_with_sink(
             topic=topic_name,

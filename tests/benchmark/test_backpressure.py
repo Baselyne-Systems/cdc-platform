@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import time
 import tracemalloc
 import uuid
@@ -9,7 +10,7 @@ import structlog
 
 from cdc_platform.streaming.consumer import CDCConsumer
 
-from .helpers import AvroProducer, SlowSink, create_benchmark_topic
+from .helpers import AvroProducer, BenchmarkResult, SlowSink, create_benchmark_topic
 
 logger = structlog.get_logger()
 
@@ -39,17 +40,8 @@ class TestBackpressure:
         max_buffered = 50
         slow_delay = 0.05
 
-        # We need to manually construct the pipeline flow to inspect the queue
-        # CDCConsumer puts into queues. But CDCConsumer usually calls handler.
-        # The architecture description says:
-        # "CDCConsumer poll -> queue -> worker -> sink"
-        # BUT CDCConsumer source code we read (Step 16) takes a handler.
-        # It does NOT seem to have an internal queue in the CDCConsumer class itself.
-        # The 'pipeline/runner.py' (which we haven't read) likely manages the queues.
-        #
-        # However, for this benchmark, we can simulate the "Consumer -> Queue -> Sink" flow
-        # by creating a custom handler that puts into a queue.
-
+        # Simulate "Consumer -> Queue -> Sink" flow with a bounded queue
+        # to verify backpressure propagates from slow sinks to the consumer.
         queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=max_buffered)
         sink = SlowSink(delay_seconds=slow_delay)
 
@@ -113,8 +105,6 @@ class TestBackpressure:
 
         await worker_task
         consume_task.cancel()
-        import contextlib
-
         with contextlib.suppress(asyncio.CancelledError):
             await consume_task
 
@@ -134,8 +124,6 @@ class TestBackpressure:
             messages=processed_count,
             duration=elapsed,
         )
-
-        from .helpers import BenchmarkResult
 
         benchmark_report.add_result(
             BenchmarkResult(
@@ -202,15 +190,16 @@ class TestBackpressure:
             kafka_config=kafka_cfg,
             handler=enqueue_handler,
         )
-        logger.debug("benchmark.backpressure.memory_consumer.created", group_id=kafka_cfg.group_id)
+        logger.debug(
+            "benchmark.backpressure.memory_consumer.created",
+            group_id=kafka_cfg.group_id,
+        )
 
         consume_task = asyncio.create_task(consumer.consume())
         worker_task = asyncio.create_task(worker())
 
         await worker_task
         consume_task.cancel()
-        import contextlib
-
         with contextlib.suppress(asyncio.CancelledError):
             await consume_task
 
@@ -228,7 +217,9 @@ class TestBackpressure:
         )
 
         if top_stats:
-            logger.debug("benchmark.backpressure.memory.top_user", stat=str(top_stats[0]))
+            logger.debug(
+                "benchmark.backpressure.memory.top_user", stat=str(top_stats[0])
+            )
 
         # 500 messages shouldn't leak memory.
         assert growth_mb < 50

@@ -28,7 +28,7 @@ from .helpers import (
 )
 
 logger = structlog.get_logger()
-SUSTAINED_LOAD = 100
+SUSTAINED_LOAD = 2_000
 
 
 @pytest.mark.benchmark
@@ -85,7 +85,9 @@ class TestSinkLatency:
             )
 
             real_sink = WebhookSink(sink_cfg)
-            sink = InstrumentedSink(real_sink, expected_count=SUSTAINED_LOAD)
+            sink = InstrumentedSink(
+                real_sink, expected_count=SUSTAINED_LOAD, track_e2e_latency=False
+            )
 
             await sink.start()
 
@@ -175,7 +177,9 @@ class TestSinkLatency:
         )
 
         real_sink = PostgresSink(sink_cfg)
-        sink = InstrumentedSink(real_sink, expected_count=SUSTAINED_LOAD)
+        sink = InstrumentedSink(
+            real_sink, expected_count=SUSTAINED_LOAD, track_e2e_latency=False
+        )
 
         await sink.start()
 
@@ -236,7 +240,9 @@ class TestSinkLatency:
         )
 
         real_sink = IcebergSink(sink_cfg)
-        sink = InstrumentedSink(real_sink, expected_count=SUSTAINED_LOAD)
+        sink = InstrumentedSink(
+            real_sink, expected_count=SUSTAINED_LOAD, track_e2e_latency=False
+        )
 
         await sink.start()
 

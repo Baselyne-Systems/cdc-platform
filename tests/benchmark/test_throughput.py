@@ -1,4 +1,3 @@
-import uuid
 from typing import Any
 
 import pytest
@@ -18,16 +17,10 @@ logger = structlog.get_logger()
 class TestThroughput:
     """End-to-end throughput tests: PG INSERT -> Debezium -> Kafka -> Consumer -> Sink."""
 
-    @pytest.fixture
-    def bench_topic(self, kafka_admin: Any, platform_config: Any) -> str:
-        topic_name = f"bench.throughput.{uuid.uuid4().hex[:8]}"
-        return topic_name
-
-    @pytest.mark.parametrize("row_count", [100, 500], ids=["100", "500"])
+    @pytest.mark.parametrize("row_count", [1_000, 10_000], ids=["1K", "10K"])
     async def test_e2e_throughput(
         self,
         row_count: int,
-        bench_topic: str,
         pg_dsn: str,
         platform_config: Any,
         benchmark_report: Any,
@@ -45,7 +38,9 @@ class TestThroughput:
         expected_count = row_count
 
         real_sink = CountingSink(expected=expected_count)
-        sink = InstrumentedSink(real_sink, expected_count=expected_count)
+        sink = InstrumentedSink(
+            real_sink, expected_count=expected_count, track_e2e_latency=False
+        )
 
         # 3. Consume
         logger.info(
@@ -54,11 +49,9 @@ class TestThroughput:
             expected=expected_count,
         )
 
-        # Timeout needs to be sufficient for 100K records processing
-        # 100K records at 1K/sec -> 100s. Give it 300s.
-        timeout = 30.0
-        if row_count >= 100_000:
-            timeout = 300.0
+        # Scale timeout with row count: base 60s for Debezium capture latency,
+        # plus ~3s per 1K rows for larger batches
+        timeout = max(60.0, row_count * 0.003 * 3)
 
         result = await consume_with_sink(
             topic="cdc.public.customers",
