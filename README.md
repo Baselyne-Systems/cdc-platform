@@ -1,24 +1,28 @@
 # CDC Platform
 
-A production-grade Change Data Capture platform that streams database changes through Kafka to multiple sink destinations with exactly-once delivery semantics.
+A modular, extensible CDC platform for streaming changes from operational databases into multiple sink destinations with exactly-once delivery semantics.
 
 ## Overview
 
-CDC Platform captures row-level changes from PostgreSQL (via Debezium) and fans them out to configurable sink destinations — webhooks, PostgreSQL replicas, and Apache Iceberg lakehouse tables. Events are serialized with Avro, schema-managed via Confluent Schema Registry, and delivered with exactly-once guarantees through min-watermark offset commits and idempotent writes.
+CDC Platform owns the full pipeline from source database to sink destination. It provisions Kafka topics, deploys Debezium connectors, manages consumer groups and offset lifecycle, monitors schemas via the Confluent Schema Registry, and routes events to configurable sinks — webhooks, PostgreSQL replicas, and Apache Iceberg lakehouse tables. Events are serialized with Avro and delivered with exactly-once guarantees through min-watermark offset commits and idempotent writes.
 
 ```
-┌──────────┐    ┌───────┐    ┌─────────────────────────────────────┐    ┌──────────────┐
-│ Postgres │───▸│ Kafka │───▸│         CDC Platform                │───▸│ Webhook      │
-│ (source) │    │       │    │                                     │───▸│ PostgreSQL   │
-│          │    │       │    │  consumer ─▸ partition queues ─▸    │───▸│ Iceberg      │
-└──────────┘    └───────┘    │  (poll)     (bounded, async)       │    └──────────────┘
-     ▲                       │              per-partition workers  │
-  Debezium                   │                  ├─ schema monitor  │
-  connector                  │                  └─ lag monitor     │
-                             └─────────────────────────────────────┘
-                                            │
-                                       DLQ on failure
-                                       (per-sink)
+                     ┌─────────────────── CDC Platform ───────────────────────┐
+                     │                                                        │
+┌──────────┐         │  ┌───────────┐    ┌────────────────────────────────┐   │    ┌──────────────┐
+│ Postgres │────────▸│  │  Debezium │───▸│  Kafka (topics, DLQ, schemas) │   │───▸│ Webhook      │
+│ (source) │         │  │ connector │    └──────────┬─────────────────────┘   │───▸│ PostgreSQL   │
+└──────────┘         │  └───────────┘               │                        │───▸│ Iceberg      │
+                     │                    consumer poll loop                  │    └──────────────┘
+                     │                        │                              │
+                     │            ┌───────────┼───────────┐                  │
+                     │            ▼           ▼           ▼                  │
+                     │       Queue(p0)   Queue(p1)   Queue(p2)  (bounded)   │
+                     │            │           │           │                  │
+                     │       Worker(p0)  Worker(p1)  Worker(p2) ──▸ sinks   │
+                     │                                                      │
+                     │       schema monitor    lag monitor                   │
+                     └──────────────────────────────────────────────────────┘
 ```
 
 ## Features
@@ -91,10 +95,13 @@ cdc run examples/demo-config.yaml
 
 Pipelines are defined in YAML. Base templates provide sensible defaults; per-pipeline configs override only what's needed.
 
+The config is organized around two boundaries: **external connections** (the source database you're capturing from, and the sink destinations you're writing to) and **platform internals** (Kafka, Debezium, Schema Registry, DLQ behavior, and pipeline tuning). Users typically only configure `source`, `sinks`, and `pipeline_id` — the platform internals have production-ready defaults.
+
 ```yaml
 pipeline_id: demo
 topic_prefix: cdc
 
+# ── External: source database ──
 source:
   database: cdc_demo
   password: cdc_password
@@ -102,6 +109,7 @@ source:
     - public.customers
     - public.orders
 
+# ── External: sink destinations ──
 sinks:
   - sink_id: webhook-notifications
     sink_type: webhook
@@ -134,6 +142,17 @@ sinks:
       write_mode: append
       batch_size: 500
       auto_create_table: true
+
+# ── Platform internals (defaults are usually fine) ──
+# kafka:
+#   bootstrap_servers: localhost:9092
+#   schema_registry_url: http://localhost:8081
+#   group_id: cdc-platform
+# connector:
+#   connect_url: http://localhost:8083
+# max_buffered_messages: 1000
+# schema_monitor_interval_seconds: 30.0
+# stop_on_incompatible_schema: false
 ```
 
 ### Environment variables
@@ -141,9 +160,12 @@ sinks:
 Platform settings can also be configured via environment variables with the `CDC_` prefix:
 
 ```bash
+# External: source database
 CDC_SOURCE__HOST=localhost
 CDC_SOURCE__PORT=5432
 CDC_SOURCE__DATABASE=cdc_demo
+
+# Platform internals: Kafka, Schema Registry, Debezium Connect
 CDC_KAFKA__BOOTSTRAP_SERVERS=localhost:9092
 CDC_KAFKA__SCHEMA_REGISTRY_URL=http://localhost:8081
 CDC_CONNECTOR__CONNECT_URL=http://localhost:8083
@@ -152,7 +174,9 @@ CDC_LOG_LEVEL=INFO
 
 See `.env.example` for the full template.
 
-### Source configuration
+### Source configuration (external)
+
+The source database that CDC captures changes from. The platform connects to it via Debezium.
 
 | Field              | Default         | Description                              |
 |--------------------|-----------------|------------------------------------------|
@@ -166,7 +190,31 @@ See `.env.example` for the full template.
 | `slot_name`        | `cdc_slot`      | PostgreSQL replication slot              |
 | `snapshot_mode`    | `initial`       | Debezium snapshot mode                   |
 
-### Pipeline configuration
+### Platform internals
+
+These configure the platform's managed infrastructure: Kafka, Debezium, Schema Registry, and the pipeline's processing behavior. The defaults are production-ready for most deployments.
+
+**Kafka** (`kafka.*`) — The platform provisions topics, manages consumer groups, commits offsets, and monitors schemas through Kafka and the Schema Registry. These are infrastructure the platform owns, not external services it connects to.
+
+| Field                  | Default                       | Description                              |
+|------------------------|-------------------------------|------------------------------------------|
+| `kafka.bootstrap_servers`   | `localhost:9092`        | Kafka broker(s)                          |
+| `kafka.schema_registry_url` | `http://localhost:8081` | Confluent Schema Registry URL            |
+| `kafka.group_id`            | `cdc-platform`          | Consumer group ID                        |
+| `kafka.auto_offset_reset`   | `earliest`              | Where to start consuming when no committed offset exists |
+| `kafka.enable_idempotence`  | `true`                  | Idempotent producer for DLQ writes       |
+| `kafka.acks`                | `all`                   | Producer acknowledgment level            |
+
+**Debezium connector** (`connector.*`) — The platform deploys and manages the Debezium source connector via the Kafka Connect REST API.
+
+| Field                        | Default                       | Description                              |
+|------------------------------|-------------------------------|------------------------------------------|
+| `connector.connect_url`     | `http://localhost:8083`        | Kafka Connect REST endpoint              |
+| `connector.timeout_seconds` | `30.0`                         | HTTP timeout for Connect API calls       |
+| `connector.retry_max_attempts` | `5`                         | Retries on connector deployment          |
+| `connector.retry_wait_seconds` | `2.0`                       | Wait between retries                     |
+
+**Pipeline tuning** — Controls backpressure, parallelism, schema monitoring, and lag reporting.
 
 | Field                            | Default | Description                                            |
 |----------------------------------|---------|--------------------------------------------------------|
@@ -176,7 +224,18 @@ See `.env.example` for the full template.
 | `lag_monitor_interval_seconds`   | `15.0`  | How often to query and log consumer lag. Creates a short-lived Kafka admin connection on each poll. |
 | `stop_on_incompatible_schema`    | `false` | When `true`, halt the pipeline on backward-incompatible schema changes (field removal, type narrowing). When `false`, log and continue. |
 
-### Sink types
+**Dead Letter Queue** (`dlq.*`) — Platform-managed error routing for sink write failures.
+
+| Field              | Default | Description                              |
+|--------------------|---------|------------------------------------------|
+| `dlq.enabled`      | `true`  | Enable DLQ routing                       |
+| `dlq.topic_suffix` | `dlq`   | Suffix appended to source topic for DLQ topic name |
+| `dlq.max_retries`  | `3`     | Max retries before routing to DLQ        |
+| `dlq.include_headers` | `true` | Include diagnostic headers on DLQ messages |
+
+### Sink destinations (external)
+
+Sinks are the external systems the platform writes to. Each sink is independently configured, retried, and monitored — one sink's failure doesn't affect others.
 
 **Webhook** — HTTP POST/PUT/PATCH to any endpoint. Unbuffered (one request per event). Payload format: `{key, value, metadata: {topic, partition, offset}}`.
 
@@ -208,17 +267,27 @@ cdc run <config>        Run the full pipeline (source -> Kafka -> sinks)
 
 ## Architecture
 
+### Platform boundary
+
+The platform manages everything between the source database and the sink destinations:
+
+- **Kafka** — Topics are provisioned automatically from source table names. The platform owns the consumer group, offset lifecycle, and DLQ topics.
+- **Schema Registry** — Debezium publishes Avro schemas; the platform monitors them for version changes and compatibility.
+- **Debezium** — The platform deploys and manages the source connector via the Kafka Connect REST API.
+- **Consumer + dispatch** — The platform's async consumer, per-partition queues, and worker tasks are the processing core.
+
+The source database and sink destinations are the only things outside the platform boundary. The source is read-only (Debezium captures WAL changes). Sinks are write-only (the platform pushes events to them).
+
 ### Pipeline lifecycle
 
-1. **Topic creation** — CDC topics are auto-created based on the source tables and topic prefix (e.g. `cdc.public.customers`)
+1. **Topic provisioning** — The platform auto-creates Kafka topics based on source tables and topic prefix (e.g. `cdc.public.customers`, `cdc.public.customers.dlq`)
 2. **Connector deployment** — A Debezium PostgreSQL connector is registered via the Kafka Connect REST API
 3. **Sink initialization** — All enabled sinks are started (connections opened, clients initialized)
-4. **Consume loop** — An async consumer polls Kafka in a background thread, deserializes Avro messages, and enqueues to per-partition bounded queues
-5. **Parallel dispatch** — Each partition has its own async worker that drains its queue and dispatches to all sinks concurrently
-6. **Offset management** — Offsets are committed at the min-watermark across all sinks (see below)
-7. **Schema monitoring** — A background task polls Schema Registry for version changes, logging structured events and optionally halting on incompatible changes
-8. **Lag monitoring** — Consumer lag per partition is periodically queried and logged
-9. **Graceful shutdown** — On SIGINT/SIGTERM, monitors are stopped, partition workers are cancelled, all sinks are flushed and stopped, and a final offset commit is issued
+4. **Schema + lag monitors started** — Background tasks begin polling the Schema Registry and Kafka for version changes and consumer lag
+5. **Consume loop** — An async consumer polls Kafka in a background thread, deserializes Avro messages, and enqueues to per-partition bounded queues
+6. **Parallel dispatch** — Each partition has its own async worker that drains its queue and dispatches to all sinks concurrently
+7. **Offset management** — Offsets are committed at the min-watermark across all sinks (see below)
+8. **Graceful shutdown** — On SIGINT/SIGTERM, monitors are stopped, partition workers are cancelled, all sinks are flushed and stopped, and a final offset commit is issued
 
 ### Exactly-once delivery
 
