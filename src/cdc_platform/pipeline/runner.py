@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from typing import Any
 
 import structlog
 from confluent_kafka import Message
 
 from cdc_platform.config.models import PipelineConfig
+from cdc_platform.observability.metrics import LagMonitor
 from cdc_platform.sinks.base import SinkConnector
 from cdc_platform.sinks.factory import create_sink
 from cdc_platform.sources.debezium.client import DebeziumClient
 from cdc_platform.streaming.consumer import CDCConsumer
 from cdc_platform.streaming.dlq import DLQHandler
 from cdc_platform.streaming.producer import create_producer
+from cdc_platform.streaming.schema_monitor import SchemaMonitor
 from cdc_platform.streaming.topics import ensure_topics, topics_for_pipeline
 
 logger = structlog.get_logger()
@@ -25,6 +28,7 @@ class Pipeline:
 
     Fan-out: each event is dispatched to all enabled sinks concurrently.
     Per-sink failures are routed to the DLQ independently.
+    Per-partition bounded queues provide backpressure and parallel consumption.
     """
 
     def __init__(self, config: PipelineConfig) -> None:
@@ -33,6 +37,10 @@ class Pipeline:
         self._consumer: CDCConsumer | None = None
         self._dlq: DLQHandler | None = None
         self._last_committed: dict[tuple[str, int], int] = {}
+        self._partition_queues: dict[tuple[str, int], asyncio.Queue[tuple[Any, Any, Message]]] = {}
+        self._partition_workers: dict[tuple[str, int], asyncio.Task[None]] = {}
+        self._schema_monitor: SchemaMonitor | None = None
+        self._lag_monitor: LagMonitor | None = None
 
     def start(self) -> None:
         """Start the full pipeline (blocking)."""
@@ -64,14 +72,35 @@ class Pipeline:
             self._sinks.append(sink)
             logger.info("pipeline.sink_started", sink_id=sink.sink_id)
 
-        # 5. Build consumer with async fan-out handler
+        # 5. Build consumer with async enqueue handler + rebalance callbacks
         cdc_topics = [t for t in all_topics if not t.endswith(".dlq")]
         self._consumer = CDCConsumer(
             topics=cdc_topics,
             kafka_config=self._config.kafka,
-            async_handler=self._dispatch_to_sinks,
+            async_handler=self._enqueue,
             dlq_config=self._config.dlq,
+            on_assign=self._on_partitions_assigned,
+            on_revoke=self._on_partitions_revoked,
         )
+
+        # 6. Start schema monitor
+        self._schema_monitor = SchemaMonitor(
+            registry_url=self._config.kafka.schema_registry_url,
+            topics=cdc_topics,
+            interval=self._config.schema_monitor_interval_seconds,
+            stop_on_incompatible=self._config.stop_on_incompatible_schema,
+            on_incompatible=self.stop,
+        )
+        await self._schema_monitor.start()
+
+        # 7. Start lag monitor
+        self._lag_monitor = LagMonitor(
+            bootstrap_servers=self._config.kafka.bootstrap_servers,
+            group_id=self._config.kafka.group_id,
+            topics=cdc_topics,
+            interval=self._config.lag_monitor_interval_seconds,
+        )
+        await self._lag_monitor.start()
 
         logger.info(
             "pipeline.started",
@@ -80,11 +109,57 @@ class Pipeline:
             topics=cdc_topics,
         )
 
-        # 6. Consume (async) — polls in a thread, awaits sinks natively
+        # 8. Consume (async) — polls in a thread, enqueues to partition queues
         try:
             await self._consumer.consume_async()
         finally:
-            await self._stop_sinks()
+            await self._shutdown()
+
+    async def _enqueue(
+        self,
+        key: dict[str, Any] | None,
+        value: dict[str, Any] | None,
+        msg: Message,
+    ) -> None:
+        """Enqueue message to the partition's bounded queue (backpressure)."""
+        tp = (msg.topic(), msg.partition())
+        queue = self._partition_queues.get(tp)
+        if queue is None:
+            queue = asyncio.Queue(maxsize=self._config.max_buffered_messages)
+            self._partition_queues[tp] = queue
+            self._partition_workers[tp] = asyncio.create_task(self._partition_loop(tp, queue))
+        await queue.put((key, value, msg))
+
+    async def _partition_loop(
+        self, tp: tuple[str, int], queue: asyncio.Queue[tuple[Any, Any, Message]]
+    ) -> None:
+        """Per-partition worker — drains queue and dispatches to sinks."""
+        while True:
+            key, value, msg = await queue.get()
+            try:
+                await self._dispatch_to_sinks(key, value, msg)
+            finally:
+                queue.task_done()
+
+    def _on_partitions_assigned(self, partitions: list[tuple[str, int]]) -> None:
+        for tp in partitions:
+            if tp not in self._partition_queues:
+                queue: asyncio.Queue[tuple[Any, Any, Message]] = asyncio.Queue(
+                    maxsize=self._config.max_buffered_messages
+                )
+                self._partition_queues[tp] = queue
+                self._partition_workers[tp] = asyncio.create_task(
+                    self._partition_loop(tp, queue)
+                )
+        logger.info("pipeline.partitions_assigned", partitions=partitions)
+
+    def _on_partitions_revoked(self, partitions: list[tuple[str, int]]) -> None:
+        for tp in partitions:
+            worker = self._partition_workers.pop(tp, None)
+            if worker:
+                worker.cancel()
+            self._partition_queues.pop(tp, None)
+        logger.info("pipeline.partitions_revoked", partitions=partitions)
 
     async def _dispatch_to_sinks(
         self,
@@ -122,6 +197,24 @@ class Pipeline:
 
         await asyncio.gather(*[_write_to_sink(s) for s in self._sinks])
         self._maybe_commit_watermark()
+
+    async def _shutdown(self) -> None:
+        """Stop monitors, drain workers, flush sinks."""
+        if self._schema_monitor:
+            await self._schema_monitor.stop()
+        if self._lag_monitor:
+            await self._lag_monitor.stop()
+
+        # Cancel all partition workers
+        for worker in self._partition_workers.values():
+            worker.cancel()
+        for worker in self._partition_workers.values():
+            with suppress(asyncio.CancelledError):
+                await worker
+        self._partition_workers.clear()
+        self._partition_queues.clear()
+
+        await self._stop_sinks()
 
     async def _stop_sinks(self) -> None:
         """Flush and stop all sinks."""
@@ -193,8 +286,19 @@ class Pipeline:
         except Exception as exc:
             source_status = {"status": "error", "error": str(exc)}
 
+        lag_data = self._lag_monitor.latest_lag if self._lag_monitor else []
+
         return {
             "pipeline_id": self._config.pipeline_id,
             "source": source_status,
             "sinks": sink_health,
+            "consumer_lag": [
+                {
+                    "topic": p.topic,
+                    "partition": p.partition,
+                    "lag": p.lag,
+                    "offset": p.current_offset,
+                }
+                for p in lag_data
+            ],
         }

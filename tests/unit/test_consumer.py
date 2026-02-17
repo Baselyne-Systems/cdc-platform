@@ -26,6 +26,79 @@ def _make_consumer() -> CDCConsumer:
     return consumer
 
 
+class TestRebalanceCallbacks:
+    def test_on_assign_callback_wired(self):
+        """on_assign callback is stored and invoked on partition assignment."""
+        assigned = []
+
+        def on_assign(partitions):
+            assigned.extend(partitions)
+
+        with patch("cdc_platform.streaming.consumer.Consumer"), \
+             patch("cdc_platform.streaming.consumer.SchemaRegistryClient"), \
+             patch("cdc_platform.streaming.consumer.AvroDeserializer"), \
+             patch("cdc_platform.streaming.consumer.create_producer"):
+            consumer = CDCConsumer(
+                topics=["test-topic"],
+                kafka_config=MagicMock(
+                    bootstrap_servers="localhost:9092",
+                    schema_registry_url="http://localhost:8081",
+                    group_id="test-group",
+                    auto_offset_reset="earliest",
+                ),
+                handler=lambda k, v, m: None,
+                on_assign=on_assign,
+            )
+
+        # Simulate Kafka calling the assign handler
+        mock_tp = MagicMock()
+        mock_tp.topic = "test-topic"
+        mock_tp.partition = 0
+        consumer._handle_assign(None, [mock_tp])
+
+        assert assigned == [("test-topic", 0)]
+
+    def test_on_revoke_callback_wired(self):
+        """on_revoke callback is stored and invoked on partition revocation."""
+        revoked = []
+
+        def on_revoke(partitions):
+            revoked.extend(partitions)
+
+        with patch("cdc_platform.streaming.consumer.Consumer"), \
+             patch("cdc_platform.streaming.consumer.SchemaRegistryClient"), \
+             patch("cdc_platform.streaming.consumer.AvroDeserializer"), \
+             patch("cdc_platform.streaming.consumer.create_producer"):
+            consumer = CDCConsumer(
+                topics=["test-topic"],
+                kafka_config=MagicMock(
+                    bootstrap_servers="localhost:9092",
+                    schema_registry_url="http://localhost:8081",
+                    group_id="test-group",
+                    auto_offset_reset="earliest",
+                ),
+                handler=lambda k, v, m: None,
+                on_revoke=on_revoke,
+            )
+
+        mock_tp = MagicMock()
+        mock_tp.topic = "test-topic"
+        mock_tp.partition = 2
+        consumer._handle_revoke(None, [mock_tp])
+
+        assert revoked == [("test-topic", 2)]
+
+    def test_no_callback_is_safe(self):
+        """When no callbacks are provided, handle_assign/revoke are noops."""
+        consumer = _make_consumer()
+        mock_tp = MagicMock()
+        mock_tp.topic = "t"
+        mock_tp.partition = 0
+        # Should not raise
+        consumer._handle_assign(None, [mock_tp])
+        consumer._handle_revoke(None, [mock_tp])
+
+
 class TestCommitOffsets:
     def test_commit_offsets_builds_topic_partitions_with_plus_one(self):
         consumer = _make_consumer()

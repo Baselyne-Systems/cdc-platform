@@ -195,6 +195,17 @@ class PipelineConfig(BaseModel):
     retry: RetryConfig = RetryConfig()
     sinks: list[SinkConfig] = Field(default_factory=list)
 
+    # Backpressure: max messages queued before consumer pauses
+    max_buffered_messages: int = 1000
+    # 0 = auto (one task per assigned partition)
+    partition_concurrency: int = 0
+    # How often to poll Schema Registry for version changes
+    schema_monitor_interval_seconds: float = 30.0
+    # How often to log consumer lag
+    lag_monitor_interval_seconds: float = 15.0
+    # Halt pipeline on backward-incompatible schema change
+    stop_on_incompatible_schema: bool = False
+
 
 class PlatformSettings(BaseSettings):
     """Environment-driven platform settings (CDC_ prefix)."""

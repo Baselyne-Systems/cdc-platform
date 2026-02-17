@@ -32,6 +32,9 @@ AsyncMessageHandler = Callable[
 ]
 
 
+PartitionCallback = Callable[[list[tuple[str, int]]], None]
+
+
 class CDCConsumer:
     """High-level CDC consumer with Avro deser, manual commit, and DLQ."""
 
@@ -43,6 +46,8 @@ class CDCConsumer:
         *,
         dlq_config: DLQConfig | None = None,
         async_handler: AsyncMessageHandler | None = None,
+        on_assign: PartitionCallback | None = None,
+        on_revoke: PartitionCallback | None = None,
     ) -> None:
         if async_handler is not None:
             self._async_handler = async_handler
@@ -53,6 +58,9 @@ class CDCConsumer:
         else:
             msg = "Either handler or async_handler must be provided"
             raise ValueError(msg)
+
+        self._on_assign = on_assign
+        self._on_revoke = on_revoke
 
         self._topics = topics
         self._kafka_config = kafka_config
@@ -90,6 +98,14 @@ class CDCConsumer:
             value = self._value_deser(msg.value(), ctx)
         return key, value
 
+    def _handle_assign(self, consumer: Any, partitions: list[Any]) -> None:
+        if self._on_assign:
+            self._on_assign([(tp.topic, tp.partition) for tp in partitions])
+
+    def _handle_revoke(self, consumer: Any, partitions: list[Any]) -> None:
+        if self._on_revoke:
+            self._on_revoke([(tp.topic, tp.partition) for tp in partitions])
+
     def consume(self, *, poll_timeout: float = 1.0) -> None:
         """Start the sync consume loop. Blocks until SIGINT/SIGTERM or stop()."""
         if self._handler is None:
@@ -97,7 +113,11 @@ class CDCConsumer:
             raise RuntimeError(msg)
 
         self._running = True
-        self._consumer.subscribe(self._topics)
+        self._consumer.subscribe(
+            self._topics,
+            on_assign=self._handle_assign,
+            on_revoke=self._handle_revoke,
+        )
         self._install_signal_handlers()
 
         logger.info("consumer.started", topics=self._topics)
@@ -127,7 +147,11 @@ class CDCConsumer:
             raise RuntimeError(msg)
 
         self._running = True
-        self._consumer.subscribe(self._topics)
+        self._consumer.subscribe(
+            self._topics,
+            on_assign=self._handle_assign,
+            on_revoke=self._handle_revoke,
+        )
         self._install_signal_handlers()
 
         loop = asyncio.get_running_loop()

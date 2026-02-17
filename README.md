@@ -159,6 +159,16 @@ See `.env.example` for the full template.
 | `slot_name`        | `cdc_slot`      | PostgreSQL replication slot              |
 | `snapshot_mode`    | `initial`       | Debezium snapshot mode                   |
 
+### Pipeline configuration
+
+| Field                            | Default | Description                                            |
+|----------------------------------|---------|--------------------------------------------------------|
+| `max_buffered_messages`          | `1000`  | Max messages queued per partition before backpressure   |
+| `partition_concurrency`          | `0`     | 0 = auto (one task per assigned partition)             |
+| `schema_monitor_interval_seconds`| `30.0`  | How often to poll Schema Registry for changes          |
+| `lag_monitor_interval_seconds`   | `15.0`  | How often to log consumer lag                          |
+| `stop_on_incompatible_schema`    | `false` | Halt pipeline on backward-incompatible schema change   |
+
 ### Sink types
 
 **Webhook** — HTTP POST/PUT/PATCH to any endpoint. Unbuffered (one request per event). Payload format: `{key, value, metadata: {topic, partition, offset}}`.
@@ -196,9 +206,12 @@ cdc run <config>        Run the full pipeline (source -> Kafka -> sinks)
 1. **Topic creation** — CDC topics are auto-created based on the source tables and topic prefix (e.g. `cdc.public.customers`)
 2. **Connector deployment** — A Debezium PostgreSQL connector is registered via the Kafka Connect REST API
 3. **Sink initialization** — All enabled sinks are started (connections opened, clients initialized)
-4. **Consume loop** — An async consumer polls Kafka in a background thread, deserializes Avro messages, and dispatches to all sinks concurrently
-5. **Offset management** — Offsets are committed at the min-watermark across all sinks (see below)
-6. **Graceful shutdown** — On SIGINT/SIGTERM, all sinks are flushed and stopped, and a final offset commit is issued
+4. **Consume loop** — An async consumer polls Kafka in a background thread, deserializes Avro messages, and enqueues to per-partition bounded queues
+5. **Parallel dispatch** — Each partition has its own async worker that drains its queue and dispatches to all sinks concurrently
+6. **Offset management** — Offsets are committed at the min-watermark across all sinks (see below)
+7. **Schema monitoring** — A background task polls Schema Registry for version changes, logging structured events and optionally halting on incompatible changes
+8. **Lag monitoring** — Consumer lag per partition is periodically queried and logged
+9. **Graceful shutdown** — On SIGINT/SIGTERM, monitors are stopped, partition workers are cancelled, all sinks are flushed and stopped, and a final offset commit is issued
 
 ### Exactly-once delivery
 
@@ -209,6 +222,26 @@ The platform uses **min-watermark offset commits** combined with **idempotent wr
 - On crash recovery, Kafka re-delivers from the last committed offset. Idempotent sinks (PostgreSQL with `upsert: true`, Iceberg in upsert mode) handle duplicates transparently.
 
 This means a slow sink (e.g. Iceberg with `batch_size=1000`) won't cause data loss for a fast sink (e.g. webhook) — the committed offset is always safe for all sinks.
+
+### Backpressure
+
+The pipeline uses **bounded `asyncio.Queue`s** per partition to prevent unbounded memory growth. When sinks are slow, queues fill up, `await queue.put()` blocks, which blocks the consumer poll loop, which causes Kafka to stop fetching. Queue size is controlled by the `max_buffered_messages` config option (default: 1000).
+
+### Parallel Consumption
+
+Each assigned Kafka partition gets its own async worker task. The consumer poll loop only enqueues messages; dispatch happens in parallel per partition. This means a slow Iceberg flush on partition 0 doesn't block partition 1. On Kafka rebalance, workers are created/cancelled via `on_assign`/`on_revoke` callbacks.
+
+### Schema Evolution
+
+A `SchemaMonitor` background task polls the Confluent Schema Registry for subject version changes. On change:
+- A structured log event is emitted with the previous/new version and compatibility status
+- When `stop_on_incompatible_schema=True`, the monitor checks the registry's compatibility endpoint. If a change is not backward-compatible (field removed, type narrowed), the pipeline is signalled to stop.
+- When `stop_on_incompatible_schema=False` (default), changes are logged but the pipeline continues.
+
+### Observability
+
+- **Consumer lag** — A `LagMonitor` periodically queries Kafka for consumer group lag per partition and logs structured events. Lag data is also included in the health endpoint response.
+- **Structured logging** — All events (schema changes, lag, partition assignment, backpressure) are logged via structlog with machine-parseable fields.
 
 ### Dead Letter Queue
 
@@ -247,7 +280,8 @@ src/cdc_platform/
 │   ├── producer.py                 # Idempotent Kafka producer
 │   ├── dlq.py                      # Dead Letter Queue handler
 │   ├── topics.py                   # Topic naming and admin utilities
-│   └── registry.py                 # Schema Registry integration
+│   ├── registry.py                 # Schema Registry integration
+│   └── schema_monitor.py           # Schema Registry version change monitor
 ├── sinks/
 │   ├── base.py                     # SinkConnector protocol
 │   ├── factory.py                  # Sink factory (type -> class registry)
