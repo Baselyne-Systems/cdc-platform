@@ -27,7 +27,7 @@ iceberg = [
     "pyiceberg[pyarrow,sql-sqlite,s3fs]>=0.8,<1",
 ]
 dev = [
-    "pytest>=8,<9",
+    "pytest>=8,<10",
     "pytest-asyncio>=0.24,<1",
     "pytest-cov>=6,<7",
     "respx>=0.22,<1",
