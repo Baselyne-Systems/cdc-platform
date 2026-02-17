@@ -39,7 +39,9 @@ def _webhook_sink_config(sink_id: str = "wh1", enabled: bool = True) -> SinkConf
 
 
 def _mock_message(
-    topic: str = "cdc.public.customers", partition: int = 0, offset: int = 1,
+    topic: str = "cdc.public.customers",
+    partition: int = 0,
+    offset: int = 1,
 ) -> MagicMock:
     msg = MagicMock()
     msg.topic.return_value = topic
@@ -53,7 +55,9 @@ def _mock_message(
 @pytest.mark.asyncio
 class TestPipelineDispatch:
     async def test_fan_out_to_multiple_sinks(self):
-        config = _make_pipeline(_webhook_sink_config("wh1"), _webhook_sink_config("wh2"))
+        config = _make_pipeline(
+            _webhook_sink_config("wh1"), _webhook_sink_config("wh2")
+        )
         pipeline = Pipeline(config, _make_platform())
 
         sink1 = AsyncMock()
@@ -97,7 +101,9 @@ class TestPipelineDispatch:
         assert call_kwargs["extra_headers"] == {"dlq.sink_id": "wh1"}
 
     async def test_one_sink_failure_doesnt_block_others(self):
-        config = _make_pipeline(_webhook_sink_config("wh1"), _webhook_sink_config("wh2"))
+        config = _make_pipeline(
+            _webhook_sink_config("wh1"), _webhook_sink_config("wh2")
+        )
         pipeline = Pipeline(config, _make_platform())
 
         failing_sink = AsyncMock()
@@ -162,7 +168,9 @@ class TestDispatchAsHandler:
         sink.write.assert_awaited_once()
 
 
-def _mock_sink(sink_id: str, flushed: dict[tuple[str, int], int] | None = None) -> MagicMock:
+def _mock_sink(
+    sink_id: str, flushed: dict[tuple[str, int], int] | None = None
+) -> MagicMock:
     """Create a mock sink with flushed_offsets property."""
     sink = AsyncMock()
     sink.sink_id = sink_id
@@ -203,7 +211,8 @@ class TestWatermarkCommit:
 
     async def test_min_watermark_across_sinks(self):
         config = _make_pipeline(
-            _webhook_sink_config("wh1"), _webhook_sink_config("wh2"),
+            _webhook_sink_config("wh1"),
+            _webhook_sink_config("wh2"),
         )
         pipeline = Pipeline(config, _make_platform())
 
@@ -220,7 +229,8 @@ class TestWatermarkCommit:
 
     async def test_partition_suppressed_when_sink_not_flushed(self):
         config = _make_pipeline(
-            _webhook_sink_config("wh1"), _webhook_sink_config("wh2"),
+            _webhook_sink_config("wh1"),
+            _webhook_sink_config("wh2"),
         )
         pipeline = Pipeline(config, _make_platform())
 
@@ -247,7 +257,9 @@ class TestWatermarkCommit:
 
         pipeline._maybe_commit_watermark()
 
-        mock_consumer.commit_offsets.assert_called_once_with({("t", 0): 5, ("t", 1): 12})
+        mock_consumer.commit_offsets.assert_called_once_with(
+            {("t", 0): 5, ("t", 1): 12}
+        )
 
     async def test_stop_sinks_commits_final_watermark(self):
         config = _make_pipeline(_webhook_sink_config("wh1"))

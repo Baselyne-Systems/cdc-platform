@@ -9,10 +9,12 @@ from cdc_platform.streaming.consumer import CDCConsumer
 
 def _make_consumer() -> CDCConsumer:
     """Create a CDCConsumer with mocked internals."""
-    with patch("cdc_platform.streaming.consumer.Consumer"), \
-         patch("cdc_platform.streaming.consumer.SchemaRegistryClient"), \
-         patch("cdc_platform.streaming.consumer.AvroDeserializer"), \
-         patch("cdc_platform.streaming.consumer.create_producer"):
+    with (
+        patch("cdc_platform.streaming.consumer.Consumer"),
+        patch("cdc_platform.streaming.consumer.SchemaRegistryClient"),
+        patch("cdc_platform.streaming.consumer.AvroDeserializer"),
+        patch("cdc_platform.streaming.consumer.create_producer"),
+    ):
         consumer = CDCConsumer(
             topics=["test-topic"],
             kafka_config=MagicMock(
@@ -34,10 +36,12 @@ class TestRebalanceCallbacks:
         def on_assign(partitions):
             assigned.extend(partitions)
 
-        with patch("cdc_platform.streaming.consumer.Consumer"), \
-             patch("cdc_platform.streaming.consumer.SchemaRegistryClient"), \
-             patch("cdc_platform.streaming.consumer.AvroDeserializer"), \
-             patch("cdc_platform.streaming.consumer.create_producer"):
+        with (
+            patch("cdc_platform.streaming.consumer.Consumer"),
+            patch("cdc_platform.streaming.consumer.SchemaRegistryClient"),
+            patch("cdc_platform.streaming.consumer.AvroDeserializer"),
+            patch("cdc_platform.streaming.consumer.create_producer"),
+        ):
             consumer = CDCConsumer(
                 topics=["test-topic"],
                 kafka_config=MagicMock(
@@ -65,10 +69,12 @@ class TestRebalanceCallbacks:
         def on_revoke(partitions):
             revoked.extend(partitions)
 
-        with patch("cdc_platform.streaming.consumer.Consumer"), \
-             patch("cdc_platform.streaming.consumer.SchemaRegistryClient"), \
-             patch("cdc_platform.streaming.consumer.AvroDeserializer"), \
-             patch("cdc_platform.streaming.consumer.create_producer"):
+        with (
+            patch("cdc_platform.streaming.consumer.Consumer"),
+            patch("cdc_platform.streaming.consumer.SchemaRegistryClient"),
+            patch("cdc_platform.streaming.consumer.AvroDeserializer"),
+            patch("cdc_platform.streaming.consumer.create_producer"),
+        ):
             consumer = CDCConsumer(
                 topics=["test-topic"],
                 kafka_config=MagicMock(

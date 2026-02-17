@@ -75,9 +75,8 @@ class SchemaMonitor:
                             self._known_schemas[subject] = schema_str
                         elif version != prev:
                             compatible = True
-                            if (
-                                self._stop_on_incompatible
-                                and self._known_schemas.get(subject)
+                            if self._stop_on_incompatible and self._known_schemas.get(
+                                subject
                             ):
                                 compatible = await self._check_compatibility(
                                     client, subject, self._known_schemas[subject]

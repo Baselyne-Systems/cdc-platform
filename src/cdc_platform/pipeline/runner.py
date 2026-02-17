@@ -38,7 +38,9 @@ class Pipeline:
         self._consumer: CDCConsumer | None = None
         self._dlq: DLQHandler | None = None
         self._last_committed: dict[tuple[str, int], int] = {}
-        self._partition_queues: dict[tuple[str, int], asyncio.Queue[tuple[Any, Any, Message]]] = {}
+        self._partition_queues: dict[
+            tuple[str, int], asyncio.Queue[tuple[Any, Any, Message]]
+        ] = {}
         self._partition_workers: dict[tuple[str, int], asyncio.Task[None]] = {}
         self._schema_monitor: SchemaMonitor | None = None
         self._lag_monitor: LagMonitor | None = None
@@ -56,7 +58,9 @@ class Pipeline:
         async with DebeziumClient(self._platform.connector) as client:
             await client.wait_until_ready()
             await client.register_connector(self._pipeline, self._platform)
-            logger.info("pipeline.connector_deployed", pipeline_id=self._pipeline.pipeline_id)
+            logger.info(
+                "pipeline.connector_deployed", pipeline_id=self._pipeline.pipeline_id
+            )
 
         # 3. Init DLQ handler
         if self._platform.dlq.enabled:
@@ -128,7 +132,9 @@ class Pipeline:
         if queue is None:
             queue = asyncio.Queue(maxsize=self._platform.max_buffered_messages)
             self._partition_queues[tp] = queue
-            self._partition_workers[tp] = asyncio.create_task(self._partition_loop(tp, queue))
+            self._partition_workers[tp] = asyncio.create_task(
+                self._partition_loop(tp, queue)
+            )
         await queue.put((key, value, msg))
 
     async def _partition_loop(
@@ -251,7 +257,8 @@ class Pipeline:
             return
 
         to_commit = {
-            tp: offset for tp, offset in committable.items()
+            tp: offset
+            for tp, offset in committable.items()
             if offset > self._last_committed.get(tp, -1)
         }
         if not to_commit:

@@ -158,7 +158,9 @@ class CDCConsumer:
         logger.info("consumer.started", topics=self._topics)
         try:
             while self._running:
-                msg = await loop.run_in_executor(None, self._consumer.poll, poll_timeout)
+                msg = await loop.run_in_executor(
+                    None, self._consumer.poll, poll_timeout
+                )
                 if msg is None:
                     continue
                 if msg.error():

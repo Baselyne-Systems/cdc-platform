@@ -51,9 +51,7 @@ def check_kafka(bootstrap_servers: str) -> ComponentHealth:
             detail=f"{len(meta.brokers)} broker(s)",
         )
     except Exception as exc:
-        return ComponentHealth(
-            name="kafka", status=Status.UNHEALTHY, detail=str(exc)
-        )
+        return ComponentHealth(name="kafka", status=Status.UNHEALTHY, detail=str(exc))
 
 
 def check_schema_registry(url: str) -> ComponentHealth:

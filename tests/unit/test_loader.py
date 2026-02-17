@@ -120,7 +120,9 @@ class TestLoadPlatformConfig:
 
     def test_loads_from_yaml(self, tmp_path: Path):
         """load_platform_config() loads overrides from a YAML file."""
-        yaml_content = "kafka:\n  bootstrap_servers: broker:29092\nmax_buffered_messages: 500\n"
+        yaml_content = (
+            "kafka:\n  bootstrap_servers: broker:29092\nmax_buffered_messages: 500\n"
+        )
         config_file = tmp_path / "platform.yaml"
         config_file.write_text(yaml_content)
         cfg = load_platform_config(config_file)

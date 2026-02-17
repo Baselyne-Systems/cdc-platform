@@ -24,7 +24,9 @@ def _make_config(
     return SinkConfig(
         sink_id="test-iceberg",
         sink_type=SinkType.ICEBERG,
-        retry=RetryConfig(max_attempts=2, initial_wait_seconds=0.01, max_wait_seconds=0.1),
+        retry=RetryConfig(
+            max_attempts=2, initial_wait_seconds=0.01, max_wait_seconds=0.1
+        ),
         iceberg=IcebergSinkConfig(
             catalog_uri="sqlite:////tmp/test_catalog.db",
             warehouse="file:///tmp/test_warehouse",
@@ -106,10 +108,13 @@ class TestIcebergSink:
 
         with patch("cdc_platform.sinks.iceberg.load_catalog", create=True) as mock_load:
             mock_load.return_value = mock_catalog
-            with patch.dict("sys.modules", {
-                "pyiceberg": MagicMock(),
-                "pyiceberg.catalog": MagicMock(load_catalog=mock_load),
-            }):
+            with patch.dict(
+                "sys.modules",
+                {
+                    "pyiceberg": MagicMock(),
+                    "pyiceberg.catalog": MagicMock(load_catalog=mock_load),
+                },
+            ):
                 await sink.start()
 
         assert sink._catalog is mock_catalog
@@ -123,10 +128,13 @@ class TestIcebergSink:
 
         with patch("cdc_platform.sinks.iceberg.load_catalog", create=True) as mock_load:
             mock_load.return_value = mock_catalog
-            with patch.dict("sys.modules", {
-                "pyiceberg": MagicMock(),
-                "pyiceberg.catalog": MagicMock(load_catalog=mock_load),
-            }):
+            with patch.dict(
+                "sys.modules",
+                {
+                    "pyiceberg": MagicMock(),
+                    "pyiceberg.catalog": MagicMock(load_catalog=mock_load),
+                },
+            ):
                 await sink.start()
 
         assert sink._table is None
@@ -138,10 +146,13 @@ class TestIcebergSink:
 
         with (
             patch("cdc_platform.sinks.iceberg.load_catalog", create=True) as mock_load,
-            patch.dict("sys.modules", {
-                "pyiceberg": MagicMock(),
-                "pyiceberg.catalog": MagicMock(load_catalog=mock_load),
-            }),
+            patch.dict(
+                "sys.modules",
+                {
+                    "pyiceberg": MagicMock(),
+                    "pyiceberg.catalog": MagicMock(load_catalog=mock_load),
+                },
+            ),
             pytest.raises(RuntimeError, match="auto_create_table is disabled"),
         ):
             mock_load.return_value = mock_catalog
@@ -153,12 +164,18 @@ class TestIcebergSink:
         sink._table = MagicMock()
 
         await sink.write(
-            key={"id": 1}, value={"name": "Alice"},
-            topic="cdc.public.customers", partition=0, offset=1,
+            key={"id": 1},
+            value={"name": "Alice"},
+            topic="cdc.public.customers",
+            partition=0,
+            offset=1,
         )
         await sink.write(
-            key={"id": 2}, value={"name": "Bob"},
-            topic="cdc.public.customers", partition=0, offset=2,
+            key={"id": 2},
+            value={"name": "Bob"},
+            topic="cdc.public.customers",
+            partition=0,
+            offset=2,
         )
 
         assert len(sink._buffer) == 2
@@ -178,8 +195,12 @@ class TestIcebergSink:
         mock_pa.Table.from_pylist.return_value = mock_arrow_table
 
         with patch.dict("sys.modules", {"pyarrow": mock_pa}):
-            await sink.write(key={"id": 1}, value={"v": 1}, topic="t", partition=0, offset=1)
-            await sink.write(key={"id": 2}, value={"v": 2}, topic="t", partition=0, offset=2)
+            await sink.write(
+                key={"id": 1}, value={"v": 1}, topic="t", partition=0, offset=1
+            )
+            await sink.write(
+                key={"id": 2}, value={"v": 2}, topic="t", partition=0, offset=2
+            )
 
         assert len(sink._buffer) == 0
         mock_table.append.assert_called_once_with(mock_arrow_table)
@@ -359,8 +380,10 @@ class TestIcebergSink:
 
         await sink.write(key=None, value={"x": 1}, topic="t", partition=0, offset=1)
 
-        with patch.dict("sys.modules", {"pyarrow": mock_pa}), \
-             pytest.raises(Exception, match="write failed"):
+        with (
+            patch.dict("sys.modules", {"pyarrow": mock_pa}),
+            pytest.raises(Exception, match="write failed"),
+        ):
             await sink.flush()
 
         assert sink.flushed_offsets == {}

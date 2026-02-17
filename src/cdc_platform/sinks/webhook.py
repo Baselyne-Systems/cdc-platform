@@ -81,7 +81,9 @@ class WebhookSink:
                 max=retry_cfg.max_wait_seconds,
                 jitter=retry_cfg.multiplier if retry_cfg.jitter else 0,
             ),
-            retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TransportError)),
+            retry=retry_if_exception_type(
+                (httpx.HTTPStatusError, httpx.TransportError)
+            ),
             reraise=True,
         )
         async def _send() -> None:

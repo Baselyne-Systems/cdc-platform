@@ -98,6 +98,8 @@ class TestPlatformConfig:
         assert cfg.kafka.auto_offset_reset == "earliest"
 
     def test_override_tuning(self):
-        cfg = PlatformConfig(max_buffered_messages=500, stop_on_incompatible_schema=True)
+        cfg = PlatformConfig(
+            max_buffered_messages=500, stop_on_incompatible_schema=True
+        )
         assert cfg.max_buffered_messages == 500
         assert cfg.stop_on_incompatible_schema is True

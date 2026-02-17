@@ -20,7 +20,9 @@ def _make_sink(batch_size: int = 3, upsert: bool = False) -> PostgresSink:
     cfg = SinkConfig(
         sink_id="test-pg",
         sink_type=SinkType.POSTGRES,
-        retry=RetryConfig(max_attempts=2, initial_wait_seconds=0.01, max_wait_seconds=0.1),
+        retry=RetryConfig(
+            max_attempts=2, initial_wait_seconds=0.01, max_wait_seconds=0.1
+        ),
         postgres=PostgresSinkConfig(
             database="testdb",
             target_table="public.cdc_events",
@@ -57,12 +59,18 @@ class TestPostgresSink:
         sink._conn = MagicMock()
 
         await sink.write(
-            key={"id": 1}, value={"name": "Alice"},
-            topic="cdc.public.customers", partition=0, offset=1,
+            key={"id": 1},
+            value={"name": "Alice"},
+            topic="cdc.public.customers",
+            partition=0,
+            offset=1,
         )
         await sink.write(
-            key={"id": 2}, value={"name": "Bob"},
-            topic="cdc.public.customers", partition=0, offset=2,
+            key={"id": 2},
+            value={"name": "Bob"},
+            topic="cdc.public.customers",
+            partition=0,
+            offset=2,
         )
 
         assert len(sink._buffer) == 2
@@ -75,8 +83,12 @@ class TestPostgresSink:
         sink._conn = MagicMock()
         sink._conn.cursor.return_value = mock_cursor
 
-        await sink.write(key={"id": 1}, value={"v": 1}, topic="t", partition=0, offset=1)
-        await sink.write(key={"id": 2}, value={"v": 2}, topic="t", partition=0, offset=2)
+        await sink.write(
+            key={"id": 1}, value={"v": 1}, topic="t", partition=0, offset=1
+        )
+        await sink.write(
+            key={"id": 2}, value={"v": 2}, topic="t", partition=0, offset=2
+        )
 
         # Buffer should have auto-flushed
         assert len(sink._buffer) == 0
@@ -89,7 +101,9 @@ class TestPostgresSink:
         sink._conn = MagicMock()
         sink._conn.cursor.return_value = mock_cursor
 
-        await sink.write(key={"id": 1}, value={"v": 1}, topic="t", partition=0, offset=1)
+        await sink.write(
+            key={"id": 1}, value={"v": 1}, topic="t", partition=0, offset=1
+        )
         await sink.flush()
 
         args = mock_cursor.executemany.call_args
@@ -205,7 +219,9 @@ class TestPostgresSink:
         sink._conn = MagicMock()
         sink._conn.cursor.return_value = mock_cursor
 
-        await sink.write(key={"id": 1}, value={"v": 1}, topic="t", partition=0, offset=1)
+        await sink.write(
+            key={"id": 1}, value={"v": 1}, topic="t", partition=0, offset=1
+        )
         await sink.flush()
 
         sql = mock_cursor.executemany.call_args[0][0]
@@ -220,7 +236,9 @@ class TestPostgresSink:
         sink._conn = MagicMock()
         sink._conn.cursor.return_value = mock_cursor
 
-        await sink.write(key={"id": 1}, value={"v": 1}, topic="t", partition=0, offset=1)
+        await sink.write(
+            key={"id": 1}, value={"v": 1}, topic="t", partition=0, offset=1
+        )
         await sink.flush()
 
         sql = mock_cursor.executemany.call_args[0][0]

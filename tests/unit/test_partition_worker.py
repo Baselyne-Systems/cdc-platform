@@ -36,7 +36,9 @@ def _make_platform() -> PlatformConfig:
     return PlatformConfig(max_buffered_messages=100)
 
 
-def _mock_message(topic: str = "cdc.public.t", partition: int = 0, offset: int = 0) -> MagicMock:
+def _mock_message(
+    topic: str = "cdc.public.t", partition: int = 0, offset: int = 0
+) -> MagicMock:
     msg = MagicMock()
     msg.topic.return_value = topic
     msg.partition.return_value = partition
@@ -177,4 +179,6 @@ class TestPartitionWorker:
 
         pipeline._maybe_commit_watermark()
 
-        mock_consumer.commit_offsets.assert_called_once_with({("t", 0): 8, ("t", 1): 20})
+        mock_consumer.commit_offsets.assert_called_once_with(
+            {("t", 0): 8, ("t", 1): 20}
+        )

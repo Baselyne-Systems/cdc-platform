@@ -45,7 +45,9 @@ def ensure_topics(
     admin = AdminClient({"bootstrap.servers": bootstrap_servers})
     existing = set(admin.list_topics(timeout=10).topics.keys())
     to_create = [
-        NewTopic(t, num_partitions=num_partitions, replication_factor=replication_factor)
+        NewTopic(
+            t, num_partitions=num_partitions, replication_factor=replication_factor
+        )
         for t in topics
         if t not in existing
     ]

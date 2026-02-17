@@ -74,12 +74,12 @@ class TestSchemaMonitor:
         )
 
         with respx.mock:
-            respx.get(f"{REGISTRY}/subjects/cdc.public.missing-key/versions/latest").mock(
-                return_value=httpx.Response(404)
-            )
-            respx.get(f"{REGISTRY}/subjects/cdc.public.missing-value/versions/latest").mock(
-                return_value=httpx.Response(404)
-            )
+            respx.get(
+                f"{REGISTRY}/subjects/cdc.public.missing-key/versions/latest"
+            ).mock(return_value=httpx.Response(404))
+            respx.get(
+                f"{REGISTRY}/subjects/cdc.public.missing-value/versions/latest"
+            ).mock(return_value=httpx.Response(404))
 
             await monitor._check_schemas()
 
@@ -132,9 +132,7 @@ class TestSchemaMonitor:
             # Compatibility check returns incompatible
             respx.post(
                 f"{REGISTRY}/compatibility/subjects/cdc.public.t-value/versions/latest"
-            ).mock(
-                return_value=httpx.Response(200, json={"is_compatible": False})
-            )
+            ).mock(return_value=httpx.Response(200, json={"is_compatible": False}))
 
             await monitor._check_schemas()
 
@@ -166,9 +164,7 @@ class TestSchemaMonitor:
             )
             respx.post(
                 f"{REGISTRY}/compatibility/subjects/cdc.public.t-value/versions/latest"
-            ).mock(
-                return_value=httpx.Response(200, json={"is_compatible": True})
-            )
+            ).mock(return_value=httpx.Response(200, json={"is_compatible": True}))
 
             await monitor._check_schemas()
 

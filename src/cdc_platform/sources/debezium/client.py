@@ -73,8 +73,7 @@ class DebeziumClient:
         )
         if resp.status_code not in (200, 201):
             raise ConnectError(
-                f"Failed to register connector {name}: "
-                f"{resp.status_code} {resp.text}"
+                f"Failed to register connector {name}: {resp.status_code} {resp.text}"
             )
         logger.info("connector.registered", connector=name)
         return resp.json()  # type: ignore[no-any-return]

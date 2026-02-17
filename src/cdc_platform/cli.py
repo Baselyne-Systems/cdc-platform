@@ -42,13 +42,17 @@ def _load(
 @app.command()
 def validate(
     config_path: str = typer.Argument(..., help="Path to pipeline YAML"),
-    platform_config: str | None = typer.Option(None, "--platform-config", help="Platform YAML"),
+    platform_config: str | None = typer.Option(
+        None, "--platform-config", help="Platform YAML"
+    ),
 ) -> None:
     """Validate a pipeline configuration file."""
     try:
         pipeline, platform = _load(config_path, platform_config)
         console.print(f"[green]Valid[/green] — pipeline_id={pipeline.pipeline_id}")
-        console.print(f"  source: {pipeline.source.source_type} → {pipeline.source.database}")
+        console.print(
+            f"  source: {pipeline.source.source_type} → {pipeline.source.database}"
+        )
         console.print(f"  tables: {pipeline.source.tables}")
         console.print(f"  kafka:  {platform.kafka.bootstrap_servers}")
         platform_source = platform_config or "(defaults)"
@@ -68,7 +72,9 @@ def validate(
 @app.command()
 def deploy(
     config_path: str = typer.Argument(..., help="Path to pipeline YAML"),
-    platform_config: str | None = typer.Option(None, "--platform-config", help="Platform YAML"),
+    platform_config: str | None = typer.Option(
+        None, "--platform-config", help="Platform YAML"
+    ),
 ) -> None:
     """Validate config and register the Debezium connector."""
     pipeline, platform = _load(config_path, platform_config)
@@ -77,14 +83,18 @@ def deploy(
         async with DebeziumClient(platform.connector) as client:
             await client.wait_until_ready()
             result = await client.register_connector(pipeline, platform)
-            console.print(f"[green]Connector registered:[/green] {result.get('name', 'unknown')}")
+            console.print(
+                f"[green]Connector registered:[/green] {result.get('name', 'unknown')}"
+            )
 
     asyncio.run(_deploy())
 
 
 @app.command()
 def health(
-    platform_config: str | None = typer.Option(None, "--platform-config", help="Platform YAML"),
+    platform_config: str | None = typer.Option(
+        None, "--platform-config", help="Platform YAML"
+    ),
 ) -> None:
     """Check health of all platform components."""
     platform = load_platform_config(Path(platform_config) if platform_config else None)
@@ -107,7 +117,9 @@ def health(
 @app.command()
 def consume(
     config_path: str = typer.Argument(..., help="Path to pipeline YAML"),
-    platform_config: str | None = typer.Option(None, "--platform-config", help="Platform YAML"),
+    platform_config: str | None = typer.Option(
+        None, "--platform-config", help="Platform YAML"
+    ),
 ) -> None:
     """Start a debug console consumer for CDC events."""
     pipeline, platform = _load(config_path, platform_config)
@@ -118,8 +130,12 @@ def consume(
         t for t in topics_for_pipeline(pipeline, platform) if not t.endswith(".dlq")
     ]
 
-    def handler(key: dict[str, Any] | None, value: dict[str, Any] | None, msg: Message) -> None:
-        console.print(f"[cyan]{msg.topic()}[/cyan] p={msg.partition()} o={msg.offset()}")
+    def handler(
+        key: dict[str, Any] | None, value: dict[str, Any] | None, msg: Message
+    ) -> None:
+        console.print(
+            f"[cyan]{msg.topic()}[/cyan] p={msg.partition()} o={msg.offset()}"
+        )
         if key:
             console.print(f"  key:   {key}")
         if value:
@@ -138,7 +154,9 @@ def consume(
 @app.command()
 def run(
     config_path: str = typer.Argument(..., help="Path to pipeline YAML"),
-    platform_config: str | None = typer.Option(None, "--platform-config", help="Platform YAML"),
+    platform_config: str | None = typer.Option(
+        None, "--platform-config", help="Platform YAML"
+    ),
 ) -> None:
     """Run the full CDC pipeline (source → Kafka → sinks)."""
     pipeline, platform = _load(config_path, platform_config)

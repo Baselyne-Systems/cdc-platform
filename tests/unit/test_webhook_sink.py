@@ -24,7 +24,9 @@ def _make_sink(
         sink_id="test-webhook",
         sink_type=SinkType.WEBHOOK,
         retry=RetryConfig(
-            max_attempts=max_attempts, initial_wait_seconds=0.01, max_wait_seconds=0.1,
+            max_attempts=max_attempts,
+            initial_wait_seconds=0.01,
+            max_wait_seconds=0.1,
         ),
         webhook=WebhookSinkConfig(url=url, auth_token=auth_token),
     )
@@ -71,9 +73,7 @@ class TestWebhookSink:
 
         await sink.start()
         try:
-            await sink.write(
-                key=None, value={"x": 1}, topic="t", partition=0, offset=0
-            )
+            await sink.write(key=None, value={"x": 1}, topic="t", partition=0, offset=0)
 
             request = respx_mock.calls[0].request
             assert request.headers["Authorization"] == "Bearer my-secret-token"
@@ -91,9 +91,7 @@ class TestWebhookSink:
 
         await sink.start()
         try:
-            await sink.write(
-                key=None, value={"x": 1}, topic="t", partition=0, offset=0
-            )
+            await sink.write(key=None, value={"x": 1}, topic="t", partition=0, offset=0)
             assert respx_mock.calls.call_count == 3
         finally:
             await sink.stop()
@@ -141,7 +139,9 @@ class TestWebhookSink:
         sink = _make_sink()
         assert sink.sink_id == "test-webhook"
 
-    async def test_flushed_offsets_advances_per_write(self, respx_mock: respx.MockRouter):
+    async def test_flushed_offsets_advances_per_write(
+        self, respx_mock: respx.MockRouter
+    ):
         sink = _make_sink()
         respx_mock.post("http://example.com/hook").mock(
             return_value=httpx.Response(200)
@@ -154,7 +154,9 @@ class TestWebhookSink:
             await sink.write(key=None, value={"x": 1}, topic="t", partition=0, offset=5)
             assert sink.flushed_offsets == {("t", 0): 5}
 
-            await sink.write(key=None, value={"x": 2}, topic="t", partition=0, offset=10)
+            await sink.write(
+                key=None, value={"x": 2}, topic="t", partition=0, offset=10
+            )
             assert sink.flushed_offsets == {("t", 0): 10}
 
             await sink.write(key=None, value={"x": 3}, topic="t", partition=1, offset=3)
@@ -162,7 +164,9 @@ class TestWebhookSink:
         finally:
             await sink.stop()
 
-    async def test_flushed_offsets_not_updated_on_failure(self, respx_mock: respx.MockRouter):
+    async def test_flushed_offsets_not_updated_on_failure(
+        self, respx_mock: respx.MockRouter
+    ):
         sink = _make_sink(max_attempts=1)
         respx_mock.post("http://example.com/hook").mock(
             return_value=httpx.Response(500)
@@ -171,7 +175,9 @@ class TestWebhookSink:
         await sink.start()
         try:
             with pytest.raises(httpx.HTTPStatusError):
-                await sink.write(key=None, value={"x": 1}, topic="t", partition=0, offset=5)
+                await sink.write(
+                    key=None, value={"x": 1}, topic="t", partition=0, offset=5
+                )
 
             assert sink.flushed_offsets == {}
         finally:

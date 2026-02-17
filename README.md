@@ -1,5 +1,7 @@
 # CDC Platform
 
+[![CI](https://github.com/Baselyne-Systems/cdc-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/Baselyne-Systems/cdc-platform/actions/workflows/ci.yml)
+
 A modular, extensible CDC platform for streaming changes from operational databases into multiple sink destinations with exactly-once delivery semantics.
 
 ## Overview
