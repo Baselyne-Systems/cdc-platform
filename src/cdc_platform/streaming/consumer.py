@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import signal
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import structlog
@@ -18,8 +19,11 @@ from cdc_platform.streaming.producer import create_producer
 
 logger = structlog.get_logger()
 
-# Callback type: receives the deserialized key and value dicts
+# Callback types: sync and async variants
 MessageHandler = Callable[[dict[str, Any] | None, dict[str, Any] | None, Message], None]
+AsyncMessageHandler = Callable[
+    [dict[str, Any] | None, dict[str, Any] | None, Message], Awaitable[None]
+]
 
 
 class CDCConsumer:
@@ -29,13 +33,23 @@ class CDCConsumer:
         self,
         topics: list[str],
         kafka_config: KafkaConfig,
-        handler: MessageHandler,
+        handler: MessageHandler | AsyncMessageHandler | None = None,
         *,
         dlq_config: DLQConfig | None = None,
+        async_handler: AsyncMessageHandler | None = None,
     ) -> None:
+        if async_handler is not None:
+            self._async_handler = async_handler
+            self._handler: MessageHandler | None = None
+        elif handler is not None:
+            self._handler = handler  # type: ignore[assignment]
+            self._async_handler = None
+        else:
+            msg = "Either handler or async_handler must be provided"
+            raise ValueError(msg)
+
         self._topics = topics
         self._kafka_config = kafka_config
-        self._handler = handler
         self._running = False
 
         registry = SchemaRegistryClient({"url": kafka_config.schema_registry_url})
@@ -71,16 +85,14 @@ class CDCConsumer:
         return key, value
 
     def consume(self, *, poll_timeout: float = 1.0) -> None:
-        """Start the consume loop. Blocks until SIGINT/SIGTERM or stop()."""
+        """Start the sync consume loop. Blocks until SIGINT/SIGTERM or stop()."""
+        if self._handler is None:
+            msg = "sync consume() requires a sync handler; use consume_async() instead"
+            raise RuntimeError(msg)
+
         self._running = True
         self._consumer.subscribe(self._topics)
-
-        def _shutdown(signum: int, frame: Any) -> None:
-            logger.info("consumer.shutdown_signal", signal=signum)
-            self._running = False
-
-        signal.signal(signal.SIGINT, _shutdown)
-        signal.signal(signal.SIGTERM, _shutdown)
+        self._install_signal_handlers()
 
         logger.info("consumer.started", topics=self._topics)
         try:
@@ -98,26 +110,69 @@ class CDCConsumer:
                     self._handler(key, value, msg)
                     self._consumer.commit(message=msg)
                 except Exception as exc:
-                    logger.error(
-                        "consumer.handler_error",
-                        topic=msg.topic(),
-                        partition=msg.partition(),
-                        offset=msg.offset(),
-                        error=str(exc),
-                    )
-                    if self._dlq:
-                        self._dlq.send(
-                            source_topic=msg.topic(),
-                            partition=msg.partition(),
-                            offset=msg.offset(),
-                            key=msg.key(),
-                            value=msg.value(),
-                            error=exc,
-                        )
-                    self._consumer.commit(message=msg)
+                    self._handle_error(msg, exc)
         finally:
             self._consumer.close()
             logger.info("consumer.stopped")
+
+    async def consume_async(self, *, poll_timeout: float = 1.0) -> None:
+        """Async consume loop — polls in a thread, awaits async handler."""
+        if self._async_handler is None:
+            msg = "consume_async() requires an async_handler"
+            raise RuntimeError(msg)
+
+        self._running = True
+        self._consumer.subscribe(self._topics)
+        self._install_signal_handlers()
+
+        loop = asyncio.get_running_loop()
+        logger.info("consumer.started", topics=self._topics)
+        try:
+            while self._running:
+                msg = await loop.run_in_executor(None, self._consumer.poll, poll_timeout)
+                if msg is None:
+                    continue
+                if msg.error():
+                    if msg.error().code() == KafkaError._PARTITION_EOF:
+                        continue
+                    raise KafkaException(msg.error())
+
+                try:
+                    key, value = self._deserialize(msg)
+                    await self._async_handler(key, value, msg)
+                    self._consumer.commit(message=msg)
+                except Exception as exc:
+                    self._handle_error(msg, exc)
+        finally:
+            self._consumer.close()
+            logger.info("consumer.stopped")
+
+    def _install_signal_handlers(self) -> None:
+        def _shutdown(signum: int, frame: Any) -> None:
+            logger.info("consumer.shutdown_signal", signal=signum)
+            self._running = False
+
+        signal.signal(signal.SIGINT, _shutdown)
+        signal.signal(signal.SIGTERM, _shutdown)
+
+    def _handle_error(self, msg: Message, exc: Exception) -> None:
+        logger.error(
+            "consumer.handler_error",
+            topic=msg.topic(),
+            partition=msg.partition(),
+            offset=msg.offset(),
+            error=str(exc),
+        )
+        if self._dlq:
+            self._dlq.send(
+                source_topic=msg.topic(),
+                partition=msg.partition(),
+                offset=msg.offset(),
+                key=msg.key(),
+                value=msg.value(),
+                error=exc,
+            )
+        self._consumer.commit(message=msg)
 
     def stop(self) -> None:
         """Signal the consume loop to stop."""

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import re
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Self
 
-from pydantic import BaseModel, Field, SecretStr, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -96,6 +96,70 @@ class RetryConfig(BaseModel):
 TopicPrefix = Annotated[str, Field(pattern=r"^[a-zA-Z][a-zA-Z0-9._-]*$")]
 
 
+class SinkType(StrEnum):
+    """Supported sink types."""
+
+    WEBHOOK = "webhook"
+    POSTGRES = "postgres"
+
+
+class WebhookSinkConfig(BaseModel):
+    """Configuration for a webhook (HTTP POST) sink."""
+
+    url: str
+    method: str = "POST"
+    headers: dict[str, str] = Field(default_factory=dict)
+    timeout_seconds: float = 30.0
+    auth_token: SecretStr | None = None
+
+
+class PostgresSinkConfig(BaseModel):
+    """Configuration for a PostgreSQL destination sink."""
+
+    host: str = "localhost"
+    port: int = 5432
+    database: str
+    username: str = "cdc_user"
+    password: SecretStr = SecretStr("cdc_password")
+    target_table: str
+    batch_size: int = 100
+    upsert: bool = False
+
+    @field_validator("target_table")
+    @classmethod
+    def validate_schema_qualified_table(cls, v: str) -> str:
+        pattern = re.compile(r"^[a-zA-Z_]\w*\.[a-zA-Z_]\w*$")
+        if not pattern.match(v):
+            msg = (
+                f"target_table '{v}' must be schema-qualified "
+                f"(e.g. 'public.cdc_events')"
+            )
+            raise ValueError(msg)
+        return v
+
+
+class SinkConfig(BaseModel):
+    """Configuration for a single sink destination."""
+
+    sink_id: str
+    sink_type: SinkType
+    enabled: bool = True
+    retry: RetryConfig = RetryConfig()
+    webhook: WebhookSinkConfig | None = None
+    postgres: PostgresSinkConfig | None = None
+
+    @model_validator(mode="after")
+    def check_matching_sub_config(self) -> Self:
+        """Ensure the sub-config matching sink_type is provided."""
+        if self.sink_type == SinkType.WEBHOOK and self.webhook is None:
+            msg = "webhook config is required when sink_type is 'webhook'"
+            raise ValueError(msg)
+        if self.sink_type == SinkType.POSTGRES and self.postgres is None:
+            msg = "postgres config is required when sink_type is 'postgres'"
+            raise ValueError(msg)
+        return self
+
+
 class PipelineConfig(BaseModel):
     """Top-level pipeline configuration — composes all sub-configs."""
 
@@ -106,6 +170,7 @@ class PipelineConfig(BaseModel):
     connector: ConnectorConfig = ConnectorConfig()
     dlq: DLQConfig = DLQConfig()
     retry: RetryConfig = RetryConfig()
+    sinks: list[SinkConfig] = Field(default_factory=list)
 
 
 class PlatformSettings(BaseSettings):

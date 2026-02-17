@@ -43,6 +43,13 @@ def validate(config_path: str = typer.Argument(..., help="Path to pipeline YAML"
         console.print(f"  source: {pipeline.source.source_type} → {pipeline.source.database}")
         console.print(f"  tables: {pipeline.source.tables}")
         console.print(f"  kafka:  {pipeline.kafka.bootstrap_servers}")
+        if pipeline.sinks:
+            console.print(f"  sinks:  {len(pipeline.sinks)}")
+            for s in pipeline.sinks:
+                status = "enabled" if s.enabled else "disabled"
+                console.print(f"    - {s.sink_id} ({s.sink_type}) [{status}]")
+        else:
+            console.print("  sinks:  (none)")
     except Exception as exc:
         console.print(f"[red]Validation error:[/red] {exc}")
         raise typer.Exit(1) from exc
@@ -113,3 +120,27 @@ def consume(
         handler=handler,
     )
     consumer.consume()
+
+
+@app.command()
+def run(
+    config_path: str = typer.Argument(..., help="Path to pipeline YAML"),
+) -> None:
+    """Run the full CDC pipeline (source → Kafka → sinks)."""
+    pipeline = _load(config_path)
+
+    from cdc_platform.pipeline.runner import Pipeline
+
+    console.print(f"[yellow]Starting pipeline:[/yellow] {pipeline.pipeline_id}")
+    if pipeline.sinks:
+        for s in pipeline.sinks:
+            if s.enabled:
+                console.print(f"  sink: {s.sink_id} ({s.sink_type})")
+    else:
+        console.print("  [dim]No sinks configured — events will be consumed only[/dim]")
+
+    runner = Pipeline(pipeline)
+    try:
+        runner.start()
+    except KeyboardInterrupt:
+        runner.stop()

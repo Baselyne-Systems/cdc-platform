@@ -11,3 +11,27 @@ source:
   tables:
     - public.customers
     - public.orders
+
+# Sink destinations — events are fan-out to all enabled sinks.
+sinks:
+  - sink_id: webhook-notifications
+    sink_type: webhook
+    enabled: true
+    webhook:
+      url: http://localhost:8000/cdc-events
+      method: POST
+      headers:
+        X-Source: cdc-platform
+      timeout_seconds: 10
+
+  - sink_id: analytics-db
+    sink_type: postgres
+    enabled: false
+    postgres:
+      host: localhost
+      port: 5433
+      database: analytics
+      username: cdc_writer
+      password: cdc_writer_password
+      target_table: public.cdc_events
+      batch_size: 50

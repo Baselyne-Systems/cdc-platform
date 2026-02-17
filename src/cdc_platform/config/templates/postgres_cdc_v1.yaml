@@ -37,3 +37,5 @@ retry:
   max_wait_seconds: 60
   multiplier: 2
   jitter: true
+
+sinks: []
