@@ -165,7 +165,7 @@ class AvroProducer:
         ctx_val = SerializationContext(self.topic, MessageField.VALUE)
         ctx_key = SerializationContext(self.topic, MessageField.KEY)
 
-        print(f"DEBUG: producing {count} messages to {self.topic}")
+        logger.debug("benchmark.produce.producing", count=count, topic=self.topic)
         for i in range(count):
             now_ms = int(time.time() * 1000)
             key = {"id": i}
@@ -225,15 +225,12 @@ class AvroProducer:
                     elapsed=elapsed_so_far,
                 )
 
-        print("DEBUG: flushing producer...")
+        logger.debug("benchmark.produce.flushing")
         remaining = self.producer.flush(timeout=10)
         if remaining > 0:
-            print(
-                f"WARNING: Producer flush timed out with {remaining} messages remaining"
-            )
             logger.warning("benchmark.produce.flush_timeout", remaining=remaining)
         else:
-            print("DEBUG: producer flushed successfully")
+            logger.debug("benchmark.produce.flushed")
 
         elapsed = time.perf_counter() - start
 
@@ -262,8 +259,6 @@ def create_benchmark_topic(
                 logger.warning("benchmark.topic.delete_failed", error=str(e))
 
         # Wait for actual deletion from metadata
-        import time
-
         for _ in range(20):
             cluster_metadata = admin.list_topics(topic)
             if topic not in cluster_metadata.topics:
@@ -273,7 +268,6 @@ def create_benchmark_topic(
             logger.warning("benchmark.topic.delete_timeout", topic=topic)
 
     logger.info("benchmark.topic.create", topic=topic, num_partitions=num_partitions)
-    print(f"DEBUG: creating topic {topic}")
     new_topic = NewTopic(topic, num_partitions=num_partitions, replication_factor=1)
     fs = admin.create_topics([new_topic])
     for f in fs.values():
@@ -286,10 +280,8 @@ def create_benchmark_topic(
             if "TOPIC_ALREADY_EXISTS" in str(e):
                 logger.warning("benchmark.topic.already_exists", topic=topic)
             else:
-                print(f"ERROR: failed to create topic {topic}: {e}")
                 raise
 
-    print(f"DEBUG: topic {topic} created")
     logger.info("benchmark.topic.ready", topic=topic)
 
 
@@ -413,14 +405,6 @@ class InstrumentedSink:
 
     async def stop(self) -> None:
         await self.inner.stop()
-        if self.start_time:
-            # We just want to ensure it's calculated or used if needed, or remove if truly unused.
-            # The linter said total_time is unused.
-            # But we might want to log it? The original code calculated it but didn't use it in log?
-            # Ah, the original code logs latency_p50/p99 but not total duration of sink.
-            # Let's just remove the assignment.
-            pass
-
         logger.info(
             "benchmark.sink.stopped",
             sink_id=self.sink_id,
@@ -431,12 +415,6 @@ class InstrumentedSink:
 
     async def health(self) -> dict[str, Any]:
         return await self.inner.health()
-
-
-# ... (skipping to consume_with_sink) ...
-
-# We can't reach consume_with_sink cleanly with one replace call if they are far apart
-# So I'll do two replace calls.
 
 
 class SlowSink:
@@ -676,10 +654,9 @@ async def consume_with_sink(
     start = time.perf_counter()
 
     # Ensure unique group ID for this run to avoid offset interference
-    import uuid
+    import uuid  # noqa: PLC0415
 
     # Create a copy with modified group_id
-    # KafkaConfig is a Pydantic model
     config_copy = kafka_config.model_copy()
     config_copy.group_id = f"{kafka_config.group_id}-{uuid.uuid4().hex[:8]}"
 

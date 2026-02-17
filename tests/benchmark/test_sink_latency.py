@@ -174,11 +174,6 @@ class TestSinkLatency:
             postgres=pg_config,
         )
 
-        if (
-            SinkType.POSTGRES not in [s.value for s in SinkType]
-        ):  # just dummy check to avoid linter complaining about unused import if removed
-            pass
-
         real_sink = PostgresSink(sink_cfg)
         sink = InstrumentedSink(real_sink, expected_count=SUSTAINED_LOAD)
 

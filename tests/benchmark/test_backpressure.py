@@ -172,13 +172,14 @@ class TestBackpressure:
 
         async def worker() -> None:
             nonlocal processed_count
-            print("DEBUG: worker started")
+            logger.debug("benchmark.backpressure.memory_worker.started")
             while processed_count < limit:
                 try:
                     await asyncio.wait_for(queue.get(), timeout=5.0)
                 except TimeoutError:
-                    print(
-                        f"DEBUG: worker timed out waiting for message {processed_count + 1}"
+                    logger.debug(
+                        "benchmark.backpressure.memory_worker.timeout",
+                        waiting_for=processed_count + 1,
                     )
                     break
 
@@ -186,7 +187,11 @@ class TestBackpressure:
                 queue.task_done()
                 processed_count += 1
                 if processed_count % 50 == 0:
-                    print(f"DEBUG: processed {processed_count}/{limit}")
+                    logger.debug(
+                        "benchmark.backpressure.memory_worker.progress",
+                        processed=processed_count,
+                        limit=limit,
+                    )
 
         # Unique group to avoid interference
         kafka_cfg = platform_config.kafka.model_copy()
@@ -197,7 +202,7 @@ class TestBackpressure:
             kafka_config=kafka_cfg,
             handler=enqueue_handler,
         )
-        print(f"DEBUG: consumer created with group {kafka_cfg.group_id}")
+        logger.debug("benchmark.backpressure.memory_consumer.created", group_id=kafka_cfg.group_id)
 
         consume_task = asyncio.create_task(consumer.consume())
         worker_task = asyncio.create_task(worker())
@@ -223,7 +228,7 @@ class TestBackpressure:
         )
 
         if top_stats:
-            print(f"DEBUG: Top memory user: {top_stats[0]}")
+            logger.debug("benchmark.backpressure.memory.top_user", stat=str(top_stats[0]))
 
         # 500 messages shouldn't leak memory.
         assert growth_mb < 50

@@ -40,10 +40,9 @@ class TestThroughput:
         generate_bulk_customers(pg_dsn, row_count)
 
         # 2. Setup sink and consumer
-        # Expect row_count + maybe existing rows?
-        # The environment is fresh docker compose, but let's assume valid state.
-        # We need to account for existing rows if any, but init.sql adds 2 rows.
-        expected_count = row_count + 2
+        # generate_bulk_customers TRUNCATEs the table first, so seed rows are gone.
+        # Debezium captures the new inserts only.
+        expected_count = row_count
 
         real_sink = CountingSink(expected=expected_count)
         sink = InstrumentedSink(real_sink, expected_count=expected_count)
