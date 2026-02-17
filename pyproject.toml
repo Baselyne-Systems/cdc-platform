@@ -46,7 +46,10 @@ packages = ["src/cdc_platform"]
 testpaths = ["tests"]
 markers = [
     "integration: marks tests requiring Docker services",
+    "benchmark: marks performance/scale benchmark tests",
 ]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
 
 [tool.ruff]
 target-version = "py312"

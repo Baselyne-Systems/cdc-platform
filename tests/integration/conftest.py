@@ -121,9 +121,7 @@ def _register_connector(docker_services, pipeline, platform):
                     return
                 if tasks and tasks[0].get("state") == "FAILED":
                     trace = tasks[0].get("trace", "")
-                    raise RuntimeError(
-                        f"Connector task FAILED:\n{trace[:500]}"
-                    )
+                    raise RuntimeError(f"Connector task FAILED:\n{trace[:500]}")
                 await asyncio.sleep(2)
             raise TimeoutError("Connector did not reach RUNNING state")
 

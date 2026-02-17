@@ -17,6 +17,14 @@ test-unit:
 test-integration:  ## Manages Docker lifecycle automatically — do not run `make up` first
 	uv run pytest tests/integration/ -v -m integration
 
+bench:  ## Run benchmark tests (manages Docker lifecycle automatically)
+	$(COMPOSE) up -d --wait
+	BENCHMARK_SKIP_DOCKER=true uv run pytest tests/benchmark/test_backpressure.py -v -m benchmark -s --tb=short
+	BENCHMARK_SKIP_DOCKER=true uv run pytest tests/benchmark/test_sink_latency.py -v -m benchmark -s --tb=short
+	BENCHMARK_SKIP_DOCKER=true uv run pytest tests/benchmark/test_multi_partition.py -v -m benchmark -s --tb=short
+	BENCHMARK_SKIP_DOCKER=true uv run pytest tests/benchmark/test_throughput.py -v -m benchmark -s --tb=short
+	$(COMPOSE) down -v
+
 lint:
 	uv run ruff check src/ tests/
 	uv run mypy src/

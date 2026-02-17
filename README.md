@@ -502,6 +502,7 @@ uv sync --extra dev
 ```bash
 make test-unit               # Unit tests only (no Docker required)
 make test-integration        # Integration tests (manages Docker lifecycle automatically)
+make bench                   # Benchmark tests (manages Docker lifecycle automatically)
 ```
 
 **Unit tests** run without any external services — all dependencies are mocked.
@@ -514,6 +515,11 @@ Prerequisites for integration tests:
 - Docker and Docker Compose installed and running
 - No services already bound to ports 5432, 9092, 8081, 8083, or 8080
 - First run may be slow while the custom Connect image builds (downloads ~12 Confluent Avro converter JARs)
+
+### Benchmarks
+
+The platform includes a dedicated benchmark suite to measure throughput, latency, backpressure, and scaling.
+See [docs/benchmarks.md](docs/benchmarks.md) for full documentation.
 
 ### Linting and formatting
 
