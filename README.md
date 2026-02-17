@@ -7,26 +7,33 @@ A production-grade Change Data Capture platform that streams database changes th
 CDC Platform captures row-level changes from PostgreSQL (via Debezium) and fans them out to configurable sink destinations — webhooks, PostgreSQL replicas, and Apache Iceberg lakehouse tables. Events are serialized with Avro, schema-managed via Confluent Schema Registry, and delivered with exactly-once guarantees through min-watermark offset commits and idempotent writes.
 
 ```
-┌──────────┐    ┌───────┐    ┌─────────────────┐    ┌──────────────┐
-│ Postgres │───▸│ Kafka │───▸│  CDC Platform   │───▸│ Webhook      │
-│ (source) │    │       │    │  (consumer +    │───▸│ PostgreSQL   │
-│          │    │       │    │   fan-out)       │───▸│ Iceberg      │
-└──────────┘    └───────┘    └─────────────────┘    └──────────────┘
-     ▲                              │
-  Debezium                     DLQ on failure
-  connector                    (per-sink)
+┌──────────┐    ┌───────┐    ┌─────────────────────────────────────┐    ┌──────────────┐
+│ Postgres │───▸│ Kafka │───▸│         CDC Platform                │───▸│ Webhook      │
+│ (source) │    │       │    │                                     │───▸│ PostgreSQL   │
+│          │    │       │    │  consumer ─▸ partition queues ─▸    │───▸│ Iceberg      │
+└──────────┘    └───────┘    │  (poll)     (bounded, async)       │    └──────────────┘
+     ▲                       │              per-partition workers  │
+  Debezium                   │                  ├─ schema monitor  │
+  connector                  │                  └─ lag monitor     │
+                             └─────────────────────────────────────┘
+                                            │
+                                       DLQ on failure
+                                       (per-sink)
 ```
 
 ## Features
 
 - **Multi-sink fan-out** — each CDC event is dispatched concurrently to all enabled sinks
+- **Backpressure** — bounded per-partition queues prevent unbounded memory growth when sinks are slow
+- **Parallel consumption** — per-partition async workers process independently within a single asyncio process
 - **Exactly-once delivery** — min-watermark offset commits ensure no data loss; idempotent upserts handle replay
+- **Schema evolution monitoring** — polls Schema Registry for version changes, optionally halts on incompatible changes
 - **Dead Letter Queue** — per-sink failures are routed to a DLQ topic with full diagnostic headers
 - **Avro serialization** — schema evolution managed by Confluent Schema Registry
 - **Retry with backoff** — configurable exponential backoff with jitter on all sink writes
 - **Template-based config** — base templates with per-pipeline overrides, validated by Pydantic
 - **CLI tooling** — validate configs, deploy connectors, check health, debug-consume, and run pipelines
-- **Observability** — structured logging (structlog), health probes, consumer lag metrics
+- **Observability** — structured logging (structlog), health probes, consumer lag metrics per partition
 
 ## Quick Start
 
@@ -163,11 +170,11 @@ See `.env.example` for the full template.
 
 | Field                            | Default | Description                                            |
 |----------------------------------|---------|--------------------------------------------------------|
-| `max_buffered_messages`          | `1000`  | Max messages queued per partition before backpressure   |
-| `partition_concurrency`          | `0`     | 0 = auto (one task per assigned partition)             |
-| `schema_monitor_interval_seconds`| `30.0`  | How often to poll Schema Registry for changes          |
-| `lag_monitor_interval_seconds`   | `15.0`  | How often to log consumer lag                          |
-| `stop_on_incompatible_schema`    | `false` | Halt pipeline on backward-incompatible schema change   |
+| `max_buffered_messages`          | `1000`  | Max messages queued **per partition** before backpressure kicks in. Total memory ≈ this × num_partitions × avg_msg_size. |
+| `partition_concurrency`          | `0`     | 0 = auto (one async task per assigned partition). Reserved for future use. |
+| `schema_monitor_interval_seconds`| `30.0`  | How often to poll Schema Registry for version changes. Lower = faster detection, higher registry load. |
+| `lag_monitor_interval_seconds`   | `15.0`  | How often to query and log consumer lag. Creates a short-lived Kafka admin connection on each poll. |
+| `stop_on_incompatible_schema`    | `false` | When `true`, halt the pipeline on backward-incompatible schema changes (field removal, type narrowing). When `false`, log and continue. |
 
 ### Sink types
 
@@ -225,23 +232,113 @@ This means a slow sink (e.g. Iceberg with `batch_size=1000`) won't cause data lo
 
 ### Backpressure
 
-The pipeline uses **bounded `asyncio.Queue`s** per partition to prevent unbounded memory growth. When sinks are slow, queues fill up, `await queue.put()` blocks, which blocks the consumer poll loop, which causes Kafka to stop fetching. Queue size is controlled by the `max_buffered_messages` config option (default: 1000).
+The pipeline uses **bounded `asyncio.Queue`s** per partition to prevent unbounded memory growth.
+
+```
+Consumer poll loop                    Per-partition workers
+     │                                     │
+     ├─ poll() ──▸ deserialize             │
+     │              │                      │
+     │              ▼                      │
+     │         await queue.put(msg) ──▸ [Queue maxsize=N] ──▸ worker drains ──▸ sinks
+     │              │                      │
+     │         blocks if full              │
+     │         (backpressure)              │
+```
+
+**How it works:** When sinks are slow, queues fill up. `await queue.put()` blocks, which blocks the consumer's poll loop, which causes Kafka to stop fetching new messages. Once sinks catch up and workers drain the queue, the consumer resumes polling.
+
+The queue size per partition is set to `max_buffered_messages` (default: 1000). This is per-partition, not shared — each `(topic, partition)` pair gets its own queue with that maxsize.
+
+**Tuning considerations:**
+- **Too small** (e.g. 10) — Frequent backpressure pauses, low throughput. The consumer spends more time blocked than polling.
+- **Too large** (e.g. 100,000) — Defeats the purpose. Memory grows proportionally to `max_buffered_messages × num_partitions × avg_message_size`.
+- **Kafka session timeout** — If backpressure blocks the poll loop longer than `session.timeout.ms` (default 45s), the broker will consider the consumer dead and trigger a rebalance. Size the queue and sink throughput so the worst-case drain time stays well under this timeout.
 
 ### Parallel Consumption
 
-Each assigned Kafka partition gets its own async worker task. The consumer poll loop only enqueues messages; dispatch happens in parallel per partition. This means a slow Iceberg flush on partition 0 doesn't block partition 1. On Kafka rebalance, workers are created/cancelled via `on_assign`/`on_revoke` callbacks.
+The pipeline runs as a **single-process asyncio** application. Each assigned Kafka partition gets its own async worker task:
+
+```
+                              ┌─ Queue(p0) ──▸ Worker(p0) ──▸ dispatch ──▸ sinks
+Consumer poll ──▸ enqueue ──▸ ├─ Queue(p1) ──▸ Worker(p1) ──▸ dispatch ──▸ sinks
+                              └─ Queue(p2) ──▸ Worker(p2) ──▸ dispatch ──▸ sinks
+```
+
+The consumer poll loop only enqueues messages to the correct partition's queue; dispatch happens in parallel per partition. A slow Iceberg flush on partition 0 does not block partition 1.
+
+**Rebalance handling:** When Kafka triggers a rebalance (new consumer joins, existing one leaves), the pipeline uses `on_assign`/`on_revoke` callbacks:
+
+- **`on_assign`** — Creates a new bounded queue + async worker task for each newly assigned partition.
+- **`on_revoke`** — Cancels the worker task and discards the queue for each revoked partition. Queued but uncommitted messages are safe to discard because their offsets were never committed — the new partition owner will re-consume them from the last committed offset.
+
+**Why single-process asyncio (not multiprocessing)?** CDC workloads are I/O-bound (network calls to sinks, S3 flushes, HTTP webhooks). Asyncio provides concurrency without the overhead of inter-process communication or GIL workarounds. For CPU-bound transformations, individual sinks can use `loop.run_in_executor()` to offload to a thread pool.
 
 ### Schema Evolution
 
-A `SchemaMonitor` background task polls the Confluent Schema Registry for subject version changes. On change:
-- A structured log event is emitted with the previous/new version and compatibility status
-- When `stop_on_incompatible_schema=True`, the monitor checks the registry's compatibility endpoint. If a change is not backward-compatible (field removed, type narrowed), the pipeline is signalled to stop.
-- When `stop_on_incompatible_schema=False` (default), changes are logged but the pipeline continues.
+A `SchemaMonitor` background task polls the Confluent Schema Registry for subject version changes. For each topic, both the key and value subjects are checked (`{topic}-key` and `{topic}-value`).
+
+**Detection flow:**
+
+1. On startup, the monitor records the current version for each subject as a baseline — no alerts are raised.
+2. On each poll interval (`schema_monitor_interval_seconds`, default 30s), the monitor fetches `/subjects/{subject}/versions/latest` from the registry.
+3. If the version has changed since the last observation:
+   - A structured log event is emitted: `schema.version_changed` with `subject`, `previous_version`, `new_version`, `schema_id`, and `compatible` fields.
+   - If `stop_on_incompatible_schema=True`, the monitor posts the *previous* schema to the registry's `/compatibility/subjects/{subject}/versions/latest` endpoint to check if the old schema is still backward-compatible with the new one. If not (field removed, type narrowed, etc.), it logs `schema.incompatible_change_detected` at ERROR level and calls the pipeline's `stop()` method.
+   - If `stop_on_incompatible_schema=False` (default), the version change is logged at INFO level and the pipeline continues.
+
+**How schema changes interact with sinks:**
+
+| Sink | Behavior on schema change |
+|------|---------------------------|
+| Iceberg | Auto-evolves the table schema (PyIceberg handles column additions natively) |
+| PostgreSQL | Column mismatch causes a write error → event routes to DLQ |
+| Webhook | Passes through the new payload shape transparently |
+
+The schema monitor provides early warning so operators can act before DLQ volume spikes. With `stop_on_incompatible_schema=True`, the pipeline halts preemptively on breaking changes rather than flooding the DLQ.
+
+**Registry errors** (network failures, 5xx responses) are logged at DEBUG level and silently skipped — the monitor retries on the next interval. The pipeline is never stopped due to a registry connectivity issue.
 
 ### Observability
 
-- **Consumer lag** — A `LagMonitor` periodically queries Kafka for consumer group lag per partition and logs structured events. Lag data is also included in the health endpoint response.
-- **Structured logging** — All events (schema changes, lag, partition assignment, backpressure) are logged via structlog with machine-parseable fields.
+**Consumer lag monitoring** — A `LagMonitor` runs as a periodic async task (interval: `lag_monitor_interval_seconds`, default 15s). It queries Kafka for the committed offset and high watermark of each partition and logs a structured event:
+
+```
+event: consumer.lag
+total_lag: 1247
+partitions:
+  - topic: cdc.public.customers, partition: 0, lag: 823, offset: 4177
+  - topic: cdc.public.customers, partition: 1, lag: 424, offset: 5576
+```
+
+Lag data is also included in the health endpoint response under the `consumer_lag` key.
+
+**Health endpoint** — `Pipeline.health()` returns:
+
+```json
+{
+  "pipeline_id": "demo",
+  "source": {"connector": {"state": "RUNNING"}, "tasks": [{"state": "RUNNING"}]},
+  "sinks": [
+    {"sink_id": "wh1", "status": "running"},
+    {"sink_id": "iceberg-lake", "status": "running"}
+  ],
+  "consumer_lag": [
+    {"topic": "cdc.public.customers", "partition": 0, "lag": 823, "offset": 4177}
+  ]
+}
+```
+
+**Structured log events reference:**
+
+| Event | Level | When |
+|-------|-------|------|
+| `pipeline.partitions_assigned` | INFO | Kafka rebalance assigns partitions |
+| `pipeline.partitions_revoked` | INFO | Kafka rebalance revokes partitions |
+| `schema.version_changed` | INFO/WARN | Schema Registry version changed (WARN if incompatible) |
+| `schema.incompatible_change_detected` | ERROR | Backward-incompatible schema change detected |
+| `consumer.lag` | INFO | Periodic lag report |
+| `pipeline.sink_write_error` | ERROR | Sink write failed (routed to DLQ) |
 
 ### Dead Letter Queue
 
@@ -289,10 +386,10 @@ src/cdc_platform/
 │   ├── postgres.py                 # PostgreSQL batched sink
 │   └── iceberg.py                  # Apache Iceberg lakehouse sink
 ├── pipeline/
-│   └── runner.py                   # Pipeline orchestrator (fan-out + watermark commits)
+│   └── runner.py                   # Pipeline orchestrator (partition queues, backpressure, monitors)
 └── observability/
     ├── health.py                   # Component health probes
-    └── metrics.py                  # Consumer lag metrics
+    └── metrics.py                  # Consumer lag metrics + LagMonitor periodic reporter
 
 docker/
 ├── docker-compose.yml              # Full local stack
