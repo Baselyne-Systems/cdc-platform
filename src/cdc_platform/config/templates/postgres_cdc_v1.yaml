@@ -1,0 +1,39 @@
+# Platform-managed defaults for PostgreSQL CDC pipelines.
+# Users override pipeline_id, source.database, and source.tables.
+
+topic_prefix: cdc
+
+source:
+  source_type: postgres
+  port: 5432
+  username: cdc_user
+  slot_name: cdc_slot
+  publication_name: cdc_publication
+  snapshot_mode: initial
+
+kafka:
+  bootstrap_servers: localhost:9092
+  schema_registry_url: http://localhost:8081
+  group_id: cdc-platform
+  auto_offset_reset: earliest
+  enable_idempotence: true
+  acks: all
+
+connector:
+  connect_url: http://localhost:8083
+  timeout_seconds: 30
+  retry_max_attempts: 5
+  retry_wait_seconds: 2
+
+dlq:
+  enabled: true
+  topic_suffix: dlq
+  max_retries: 3
+  include_headers: true
+
+retry:
+  max_attempts: 5
+  initial_wait_seconds: 1
+  max_wait_seconds: 60
+  multiplier: 2
+  jitter: true

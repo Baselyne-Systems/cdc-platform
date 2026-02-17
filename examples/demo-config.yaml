@@ -1,0 +1,13 @@
+# Example pipeline configuration for the CDC demo.
+# Platform defaults come from the postgres_cdc_v1 template;
+# only pipeline-specific fields need to be specified here.
+
+pipeline_id: demo
+topic_prefix: cdc
+
+source:
+  database: cdc_demo
+  password: cdc_password
+  tables:
+    - public.customers
+    - public.orders
