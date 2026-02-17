@@ -1,0 +1,168 @@
+"""Pipeline orchestrator — source → consumer → sink(s) lifecycle."""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+import structlog
+from confluent_kafka import Message
+
+from cdc_platform.config.models import PipelineConfig
+from cdc_platform.sinks.base import SinkConnector
+from cdc_platform.sinks.factory import create_sink
+from cdc_platform.sources.debezium.client import DebeziumClient
+from cdc_platform.streaming.consumer import CDCConsumer
+from cdc_platform.streaming.dlq import DLQHandler
+from cdc_platform.streaming.producer import create_producer
+from cdc_platform.streaming.topics import ensure_topics, topics_for_pipeline
+
+logger = structlog.get_logger()
+
+
+class Pipeline:
+    """Orchestrates the full CDC pipeline: source → Kafka → sink(s).
+
+    Fan-out: each event is dispatched to all enabled sinks concurrently.
+    Per-sink failures are routed to the DLQ independently.
+    """
+
+    def __init__(self, config: PipelineConfig) -> None:
+        self._config = config
+        self._sinks: list[SinkConnector] = []
+        self._consumer: CDCConsumer | None = None
+        self._dlq: DLQHandler | None = None
+
+    def start(self) -> None:
+        """Start the full pipeline (blocking)."""
+        asyncio.run(self._start_async())
+
+    async def _start_async(self) -> None:
+        # 1. Ensure topics exist
+        all_topics = topics_for_pipeline(self._config)
+        ensure_topics(self._config.kafka.bootstrap_servers, all_topics)
+
+        # 2. Deploy Debezium connector
+        async with DebeziumClient(self._config.connector) as client:
+            await client.wait_until_ready()
+            await client.register_connector(self._config)
+            logger.info("pipeline.connector_deployed", pipeline_id=self._config.pipeline_id)
+
+        # 3. Init DLQ handler
+        if self._config.dlq.enabled:
+            producer = create_producer(self._config.kafka)
+            self._dlq = DLQHandler(producer, self._config.dlq)
+
+        # 4. Start enabled sinks
+        for sink_cfg in self._config.sinks:
+            if not sink_cfg.enabled:
+                logger.info("pipeline.sink_disabled", sink_id=sink_cfg.sink_id)
+                continue
+            sink = create_sink(sink_cfg)
+            await sink.start()
+            self._sinks.append(sink)
+            logger.info("pipeline.sink_started", sink_id=sink.sink_id)
+
+        # 5. Build consumer with async fan-out handler
+        cdc_topics = [t for t in all_topics if not t.endswith(".dlq")]
+        self._consumer = CDCConsumer(
+            topics=cdc_topics,
+            kafka_config=self._config.kafka,
+            async_handler=self._dispatch_to_sinks,
+            dlq_config=self._config.dlq,
+        )
+
+        logger.info(
+            "pipeline.started",
+            pipeline_id=self._config.pipeline_id,
+            sinks=[s.sink_id for s in self._sinks],
+            topics=cdc_topics,
+        )
+
+        # 6. Consume (async) — polls in a thread, awaits sinks natively
+        try:
+            await self._consumer.consume_async()
+        finally:
+            await self._stop_sinks()
+
+    async def _dispatch_to_sinks(
+        self,
+        key: dict[str, Any] | None,
+        value: dict[str, Any] | None,
+        msg: Message,
+    ) -> None:
+        """Fan-out to all sinks concurrently; per-sink failures → DLQ."""
+        topic = msg.topic()
+        partition = msg.partition()
+        offset = msg.offset()
+
+        async def _write_to_sink(sink: SinkConnector) -> None:
+            try:
+                await sink.write(key, value, topic, partition, offset)
+            except Exception as exc:
+                logger.error(
+                    "pipeline.sink_write_error",
+                    sink_id=sink.sink_id,
+                    topic=topic,
+                    partition=partition,
+                    offset=offset,
+                    error=str(exc),
+                )
+                if self._dlq:
+                    self._dlq.send(
+                        source_topic=topic,
+                        partition=partition,
+                        offset=offset,
+                        key=msg.key(),
+                        value=msg.value(),
+                        error=exc,
+                        extra_headers={"dlq.sink_id": sink.sink_id},
+                    )
+
+        await asyncio.gather(*[_write_to_sink(s) for s in self._sinks])
+
+    async def _stop_sinks(self) -> None:
+        """Flush and stop all sinks."""
+        for sink in self._sinks:
+            try:
+                await sink.flush()
+                await sink.stop()
+            except Exception as exc:
+                logger.error(
+                    "pipeline.sink_stop_error",
+                    sink_id=sink.sink_id,
+                    error=str(exc),
+                )
+
+    def stop(self) -> None:
+        """Signal the pipeline to stop."""
+        if self._consumer is not None:
+            self._consumer.stop()
+
+    async def health(self) -> dict[str, Any]:
+        """Aggregate health from source connector + all sinks."""
+        sink_health = []
+        for sink in self._sinks:
+            try:
+                sink_health.append(await sink.health())
+            except Exception as exc:
+                sink_health.append(
+                    {"sink_id": sink.sink_id, "status": "error", "error": str(exc)}
+                )
+
+        # Check source connector status
+        source_status: dict[str, Any] = {}
+        try:
+            from cdc_platform.sources.debezium.config import connector_name
+
+            name = connector_name(self._config)
+            async with DebeziumClient(self._config.connector) as client:
+                source_status = await client.get_connector_status(name)
+        except Exception as exc:
+            source_status = {"status": "error", "error": str(exc)}
+
+        return {
+            "pipeline_id": self._config.pipeline_id,
+            "source": source_status,
+            "sinks": sink_health,
+        }

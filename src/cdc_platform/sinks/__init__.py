@@ -1,0 +1,1 @@
+"""CDC sink connectors."""
