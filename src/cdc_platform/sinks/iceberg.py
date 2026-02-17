@@ -1,7 +1,6 @@
 """Apache Iceberg lakehouse sink connector."""
 
-from __future__ import annotations
-
+import contextlib
 from typing import Any
 
 import structlog
@@ -15,11 +14,13 @@ class IcebergSink:
     """Writes CDC events to an Apache Iceberg table with batched appends/upserts."""
 
     def __init__(self, config: SinkConfig) -> None:
+        from cdc_platform.config.models import IcebergSinkConfig
+
         self._config = config
-        self._ice_config = config.iceberg
-        if self._ice_config is None:
+        if config.iceberg is None:
             msg = "IcebergSink requires an iceberg sub-config"
             raise ValueError(msg)
+        self._ice_config: IcebergSinkConfig = config.iceberg
         self._catalog: Any = None
         self._table: Any = None
         self._buffer: list[dict[str, Any]] = []
@@ -108,7 +109,7 @@ class IcebergSink:
             return
 
         try:
-            import pyarrow as pa
+            import pyarrow as pa  # type: ignore[import-untyped]
         except ImportError:
             msg = (
                 "pyarrow is required for the Iceberg sink. "
@@ -126,6 +127,9 @@ class IcebergSink:
 
         if self._table is None:
             partition_spec = self._build_partition_spec(cfg.partition_by)
+            with contextlib.suppress(Exception):
+                # Might already exist or driver doesn't support it
+                self._catalog.create_namespace(cfg.table_namespace)
             self._table = self._catalog.create_table(
                 full_name,
                 schema=arrow_table.schema,
@@ -189,8 +193,8 @@ class IcebergSink:
 
     @staticmethod
     def _build_partition_spec(partition_by: list[str]) -> Any:
-        from pyiceberg.transforms import PartitionSpec
+        from pyiceberg.partitioning import PartitionSpec
 
         if not partition_by:
             return PartitionSpec()
-        return PartitionSpec(*partition_by)
+        return PartitionSpec(*partition_by)  # type: ignore[arg-type]

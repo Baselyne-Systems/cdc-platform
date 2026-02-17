@@ -82,7 +82,7 @@ class Pipeline:
         self._consumer = CDCConsumer(
             topics=cdc_topics,
             kafka_config=self._platform.kafka,
-            async_handler=self._enqueue,
+            handler=self._enqueue,
             dlq_config=self._platform.dlq,
             on_assign=self._on_partitions_assigned,
             on_revoke=self._on_partitions_revoked,
@@ -116,7 +116,7 @@ class Pipeline:
 
         # 8. Consume (async) — polls in a thread, enqueues to partition queues
         try:
-            await self._consumer.consume_async()
+            await self._consumer.consume()
         finally:
             await self._shutdown()
 
@@ -127,7 +127,11 @@ class Pipeline:
         msg: Message,
     ) -> None:
         """Enqueue message to the partition's bounded queue (backpressure)."""
-        tp = (msg.topic(), msg.partition())
+        topic = msg.topic()
+        partition = msg.partition()
+        assert topic is not None
+        assert partition is not None
+        tp = (topic, partition)
         queue = self._partition_queues.get(tp)
         if queue is None:
             queue = asyncio.Queue(maxsize=self._platform.max_buffered_messages)
@@ -178,6 +182,9 @@ class Pipeline:
         topic = msg.topic()
         partition = msg.partition()
         offset = msg.offset()
+        assert topic is not None
+        assert partition is not None
+        assert offset is not None
 
         async def _write_to_sink(sink: SinkConnector) -> None:
             try:

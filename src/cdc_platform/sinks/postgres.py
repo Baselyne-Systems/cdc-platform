@@ -21,11 +21,13 @@ class PostgresSink:
     """Writes CDC events to a PostgreSQL destination table with batched inserts."""
 
     def __init__(self, config: SinkConfig) -> None:
+        from cdc_platform.config.models import PostgresSinkConfig
+
         self._config = config
-        self._pg_config = config.postgres
-        if self._pg_config is None:
+        if config.postgres is None:
             msg = "PostgresSink requires a postgres sub-config"
             raise ValueError(msg)
+        self._pg_config: PostgresSinkConfig = config.postgres
         self._conn: Any = None
         self._buffer: list[tuple[str, str, str, int, int]] = []
         self._flushed_offsets: dict[tuple[str, int], int] = {}
@@ -101,6 +103,7 @@ class PostgresSink:
         )
         def _insert() -> None:
             try:
+                assert self._conn is not None
                 cur = self._conn.cursor()
                 sql = (
                     f"INSERT INTO {self._pg_config.target_table} "  # noqa: S608

@@ -170,27 +170,43 @@ class AvroProducer:
             now_ms = int(time.time() * 1000)
             key = {"id": i}
             # Simulate a CREATE event
+            after = {
+                "id": i,
+                "email": f"bench{i}@example.com",
+                "full_name": f"Benchmark User {i}",
+                "created_at": "2024-01-01T00:00:00Z",
+                "updated_at": "2024-01-01T00:00:00Z",
+            }
+            source = {
+                "version": "2.5.0.Final",
+                "connector": "postgresql",
+                "name": "cdc_demo",
+                "ts_ms": now_ms,
+                "snapshot": "false",
+                "db": "cdc_demo",
+                "schema": "public",
+                "table": "customers",
+            }
+            # Provide non-null values for ALL optional fields for the first message
+            # to avoid pa.null() inference which Iceberg v2 doesn't support.
+            before = None
+            if i == 0:
+                before = after
+                source.update(
+                    {
+                        "sequence": "sample",
+                        "txId": 1,
+                        "lsn": 1,
+                        "xmin": 1,
+                    }
+                )
+
             value = {
                 "op": "c",
                 "ts_ms": now_ms,
-                "before": None,
-                "after": {
-                    "id": i,
-                    "email": f"bench{i}@example.com",
-                    "full_name": f"Benchmark User {i}",
-                    "created_at": "2024-01-01T00:00:00Z",
-                    "updated_at": "2024-01-01T00:00:00Z",
-                },
-                "source": {
-                    "version": "2.5.0.Final",
-                    "connector": "postgresql",
-                    "name": "cdc_demo",
-                    "ts_ms": now_ms,
-                    "snapshot": "false",
-                    "db": "cdc_demo",
-                    "schema": "public",
-                    "table": "customers",
-                },
+                "before": before,
+                "after": after,
+                "source": source,
             }
 
             self.producer.produce(
@@ -358,7 +374,7 @@ class InstrumentedSink:
     ) -> None:
         now_ms = time.time() * 1000
         now_perf = time.perf_counter()
-        
+
         if self.first_write_time is None:
             self.first_write_time = now_perf
         self.last_write_time = now_perf
@@ -591,16 +607,22 @@ class BenchmarkReport:
             table.add_row(
                 r.name,
                 f"{r.messages:,}",
-                f"{r.conn_rebal_duration:.2f}s" if r.conn_rebal_duration is not None else "-",
+                f"{r.conn_rebal_duration:.2f}s"
+                if r.conn_rebal_duration is not None
+                else "-",
                 f"{r.active_duration:.2f}s" if r.active_duration is not None else "-",
-                f"{r.teardown_duration:.2f}s" if r.teardown_duration is not None else "-",
+                f"{r.teardown_duration:.2f}s"
+                if r.teardown_duration is not None
+                else "-",
                 f"{r.duration_seconds:.2f}s",
                 f"{r.throughput_msg_per_sec:,.0f}/s",
             )
 
         console.print(table)
         console.print("[dim]Metric Descriptions:[/dim]")
-        console.print("[dim]- Conn/Rebal: Kafka connection and rebalance overhead[/dim]")
+        console.print(
+            "[dim]- Conn/Rebal: Kafka connection and rebalance overhead[/dim]"
+        )
         console.print("[dim]- Active: Time from first to last message written[/dim]")
         console.print("[dim]- Teardown: Final offset flush and consumer shutdown[/dim]")
         console.print()
@@ -676,14 +698,14 @@ async def consume_with_sink(
     consumer = CDCConsumer(
         topics=[topic],
         kafka_config=config_copy,
-        async_handler=sink_handler,
+        handler=sink_handler,
     )
 
     # If sink is CountingSink and already finished (rare race), checks done
     if isinstance(sink, CountingSink) and sink.done_event.is_set():
         pass
     else:
-        consume_task = asyncio.create_task(consumer.consume_async())
+        consume_task = asyncio.create_task(consumer.consume())
 
         try:
             if isinstance(sink, CountingSink):

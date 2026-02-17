@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import structlog
-from confluent_kafka.admin import AdminClient, NewTopic
+from confluent_kafka.admin import AdminClient, NewTopic  # type: ignore[attr-defined]
 
 from cdc_platform.config.models import PipelineConfig, PlatformConfig
 

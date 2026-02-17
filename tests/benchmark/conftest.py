@@ -34,7 +34,9 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
 
-def pytest_sessionfinish(session: pytest.Session, exitstatus: int | pytest.ExitCode) -> None:
+def pytest_sessionfinish(
+    session: pytest.Session, exitstatus: int | pytest.ExitCode
+) -> None:
     """Print consolidated benchmark report at end of session."""
     if not SESSION_RESULTS:
         return
@@ -180,7 +182,9 @@ async def _register_connector(
 
 
 @pytest.fixture
-def benchmark_report(request: pytest.FixtureRequest) -> Generator[BenchmarkReport, None, None]:
+def benchmark_report(
+    request: pytest.FixtureRequest,
+) -> Generator[BenchmarkReport, None, None]:
     """Yield a BenchmarkReport and print summary on teardown."""
     report = BenchmarkReport(test_name=request.node.name)
     yield report

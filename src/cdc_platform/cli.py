@@ -130,7 +130,7 @@ def consume(
         t for t in topics_for_pipeline(pipeline, platform) if not t.endswith(".dlq")
     ]
 
-    def handler(
+    async def handler(
         key: dict[str, Any] | None, value: dict[str, Any] | None, msg: Message
     ) -> None:
         console.print(
@@ -148,7 +148,7 @@ def consume(
         kafka_config=platform.kafka,
         handler=handler,
     )
-    consumer.consume()
+    asyncio.run(consumer.consume())
 
 
 @app.command()

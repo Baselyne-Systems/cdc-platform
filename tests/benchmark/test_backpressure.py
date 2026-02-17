@@ -63,7 +63,7 @@ class TestBackpressure:
         consumer = CDCConsumer(
             topics=[bench_topic],
             kafka_config=platform_config.kafka,
-            async_handler=enqueue_handler,
+            handler=enqueue_handler,
         )
 
         # Worker task
@@ -108,7 +108,7 @@ class TestBackpressure:
 
         start_time = time.perf_counter()
 
-        consume_task = asyncio.create_task(consumer.consume_async())
+        consume_task = asyncio.create_task(consumer.consume())
         worker_task = asyncio.create_task(worker())
 
         await worker_task
@@ -195,11 +195,11 @@ class TestBackpressure:
         consumer = CDCConsumer(
             topics=[bench_topic],
             kafka_config=kafka_cfg,
-            async_handler=enqueue_handler,
+            handler=enqueue_handler,
         )
         print(f"DEBUG: consumer created with group {kafka_cfg.group_id}")
 
-        consume_task = asyncio.create_task(consumer.consume_async())
+        consume_task = asyncio.create_task(consumer.consume())
         worker_task = asyncio.create_task(worker())
 
         await worker_task

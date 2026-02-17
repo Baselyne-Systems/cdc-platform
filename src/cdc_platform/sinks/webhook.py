@@ -22,11 +22,13 @@ class WebhookSink:
     """Sends CDC events as JSON via HTTP POST (or configured method)."""
 
     def __init__(self, config: SinkConfig) -> None:
+        from cdc_platform.config.models import WebhookSinkConfig
+
         self._config = config
-        self._webhook = config.webhook
-        if self._webhook is None:
+        if config.webhook is None:
             msg = "WebhookSink requires a webhook sub-config"
             raise ValueError(msg)
+        self._webhook: WebhookSinkConfig = config.webhook
         self._client: httpx.AsyncClient | None = None
         self._flushed_offsets: dict[tuple[str, int], int] = {}
 
@@ -87,6 +89,7 @@ class WebhookSink:
             reraise=True,
         )
         async def _send() -> None:
+            assert self._client is not None
             response = await self._client.request(
                 method=self._webhook.method,
                 url=self._webhook.url,

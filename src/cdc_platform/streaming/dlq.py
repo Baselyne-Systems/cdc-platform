@@ -52,7 +52,9 @@ class DLQHandler:
             if extra_headers:
                 headers.update(extra_headers)
 
-        kafka_headers = [(k, v.encode()) for k, v in headers.items()]
+        kafka_headers: list[tuple[str, str | bytes | None]] = [
+            (k, v.encode() if isinstance(v, str) else v) for k, v in headers.items()
+        ]
 
         self._producer.produce(
             topic=dlq,

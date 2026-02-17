@@ -30,7 +30,9 @@ def produce_message(
     headers: dict[str, str] | None = None,
 ) -> None:
     """Produce a single message and poll for delivery."""
-    kafka_headers = [(k, v.encode()) for k, v in (headers or {}).items()]
+    kafka_headers: list[tuple[str, str | bytes | None]] = [
+        (k, v.encode()) for k, v in (headers or {}).items()
+    ]
     producer.produce(
         topic=topic,
         value=value,

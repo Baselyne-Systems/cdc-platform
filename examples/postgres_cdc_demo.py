@@ -69,7 +69,7 @@ def main() -> None:
     console.print(f"[yellow]Consuming from:[/yellow] {cdc_topics}")
     console.print("[dim]Press Ctrl+C to stop[/dim]\n")
 
-    def handler(
+    async def handler(
         key: dict[str, Any] | None,
         value: dict[str, Any] | None,
         msg: Message,
@@ -88,7 +88,7 @@ def main() -> None:
         kafka_config=platform.kafka,
         handler=handler,
     )
-    consumer.consume()
+    asyncio.run(consumer.consume())
 
 
 if __name__ == "__main__":

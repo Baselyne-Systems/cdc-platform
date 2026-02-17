@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
@@ -59,14 +59,14 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         msg = f"Expected a YAML mapping at top level, got {type(data).__name__}"
         raise TypeError(msg)
-    return resolve_env_vars(data)
+    return cast(dict[str, Any], resolve_env_vars(data))
 
 
 def _load_platform_defaults() -> dict[str, Any]:
     """Load the built-in platform.yaml defaults."""
     path = DEFAULTS_DIR / "platform.yaml"
     with path.open() as f:
-        return yaml.safe_load(f)  # type: ignore[no-any-return]
+        return cast(dict[str, Any], yaml.safe_load(f))
 
 
 def load_platform_config(path: str | Path | None = None) -> PlatformConfig:

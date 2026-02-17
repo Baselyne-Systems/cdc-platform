@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from contextlib import suppress
+from typing import cast
 
 import httpx
 import structlog
@@ -123,7 +124,7 @@ class SchemaMonitor:
                 json={"schema": old_schema},
             )
             if resp.status_code == 200:
-                return resp.json().get("is_compatible", True)
+                return cast(bool, resp.json().get("is_compatible", True))
             return True
         except Exception:
             return True

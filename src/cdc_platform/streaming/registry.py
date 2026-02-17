@@ -16,11 +16,15 @@ def create_avro_serializer(
     schema_str: str,
 ) -> AvroSerializer:
     """Create an Avro serializer bound to the registry."""
-    return AvroSerializer(registry, schema_str)
+    from typing import cast
+
+    return cast(AvroSerializer, AvroSerializer(registry, schema_str))
 
 
 def create_avro_deserializer(
     registry: SchemaRegistryClient,
 ) -> AvroDeserializer:
     """Create an Avro deserializer that looks up schemas in the registry."""
-    return AvroDeserializer(registry)
+    from typing import cast
+
+    return cast(AvroDeserializer, AvroDeserializer(registry))

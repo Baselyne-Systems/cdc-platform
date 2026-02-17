@@ -25,8 +25,7 @@ from cdc_platform.streaming.producer import create_producer
 
 logger = structlog.get_logger()
 
-# Callback types: sync and async variants
-MessageHandler = Callable[[dict[str, Any] | None, dict[str, Any] | None, Message], None]
+# Callback types
 AsyncMessageHandler = Callable[
     [dict[str, Any] | None, dict[str, Any] | None, Message], Awaitable[None]
 ]
@@ -42,22 +41,13 @@ class CDCConsumer:
         self,
         topics: list[str],
         kafka_config: KafkaConfig,
-        handler: MessageHandler | AsyncMessageHandler | None = None,
+        handler: AsyncMessageHandler,
         *,
         dlq_config: DLQConfig | None = None,
-        async_handler: AsyncMessageHandler | None = None,
         on_assign: PartitionCallback | None = None,
         on_revoke: PartitionCallback | None = None,
     ) -> None:
-        if async_handler is not None:
-            self._async_handler = async_handler
-            self._handler: MessageHandler | None = None
-        elif handler is not None:
-            self._handler = handler  # type: ignore[assignment]
-            self._async_handler = None
-        else:
-            msg = "Either handler or async_handler must be provided"
-            raise ValueError(msg)
+        self._handler = handler
 
         self._on_assign = on_assign
         self._on_revoke = on_revoke
@@ -79,6 +69,7 @@ class CDCConsumer:
             }
         )
 
+        self._dlq: DLQHandler | None
         dlq_cfg = dlq_config or DLQConfig()
         if dlq_cfg.enabled:
             producer = create_producer(kafka_config)
@@ -86,8 +77,11 @@ class CDCConsumer:
         else:
             self._dlq = None
 
-    def _deserialize(self, msg: Message) -> tuple[Any, Any]:
+    def _deserialize(
+        self, msg: Message
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         topic = msg.topic()
+        assert topic is not None
         key = None
         value = None
         if msg.key() is not None:
@@ -106,46 +100,8 @@ class CDCConsumer:
         if self._on_revoke:
             self._on_revoke([(tp.topic, tp.partition) for tp in partitions])
 
-    def consume(self, *, poll_timeout: float = 1.0) -> None:
-        """Start the sync consume loop. Blocks until SIGINT/SIGTERM or stop()."""
-        if self._handler is None:
-            msg = "sync consume() requires a sync handler; use consume_async() instead"
-            raise RuntimeError(msg)
-
-        self._running = True
-        self._consumer.subscribe(
-            self._topics,
-            on_assign=self._handle_assign,
-            on_revoke=self._handle_revoke,
-        )
-        self._install_signal_handlers()
-
-        logger.info("consumer.started", topics=self._topics)
-        try:
-            while self._running:
-                msg = self._consumer.poll(poll_timeout)
-                if msg is None:
-                    continue
-                if msg.error():
-                    if msg.error().code() == KafkaError._PARTITION_EOF:
-                        continue
-                    raise KafkaException(msg.error())
-
-                try:
-                    key, value = self._deserialize(msg)
-                    self._handler(key, value, msg)
-                except Exception as exc:
-                    self._handle_error(msg, exc)
-        finally:
-            self._consumer.close()
-            logger.info("consumer.stopped")
-
-    async def consume_async(self, *, poll_timeout: float = 1.0) -> None:
+    async def consume(self, *, poll_timeout: float = 1.0) -> None:
         """Async consume loop — polls in a thread, awaits async handler."""
-        if self._async_handler is None:
-            msg = "consume_async() requires an async_handler"
-            raise RuntimeError(msg)
-
         self._running = True
         self._consumer.subscribe(
             self._topics,
@@ -158,21 +114,23 @@ class CDCConsumer:
         logger.info("consumer.started", topics=self._topics)
         try:
             while self._running:
-                msg = await loop.run_in_executor(
+                polled_message = await loop.run_in_executor(
                     None, self._consumer.poll, poll_timeout
                 )
-                if msg is None:
+                if polled_message is None:
                     continue
-                if msg.error():
-                    if msg.error().code() == KafkaError._PARTITION_EOF:
-                        continue
-                    raise KafkaException(msg.error())
+
+                err = polled_message.error()
+                if err and err.code() == KafkaError._PARTITION_EOF:  # type: ignore[attr-defined]
+                    continue
+                if err:
+                    raise KafkaException(err)
 
                 try:
-                    key, value = self._deserialize(msg)
-                    await self._async_handler(key, value, msg)
+                    key, value = self._deserialize(polled_message)
+                    await self._handler(key, value, polled_message)
                 except Exception as exc:
-                    self._handle_error(msg, exc)
+                    self._handle_error(polled_message, exc)
         finally:
             self._consumer.close()
             logger.info("consumer.stopped")
@@ -193,11 +151,19 @@ class CDCConsumer:
             offset=msg.offset(),
             error=str(exc),
         )
-        if self._dlq:
+        topic = msg.topic()
+        partition = msg.partition()
+        offset = msg.offset()
+        if (
+            self._dlq
+            and topic is not None
+            and partition is not None
+            and offset is not None
+        ):
             self._dlq.send(
-                source_topic=msg.topic(),
-                partition=msg.partition(),
-                offset=msg.offset(),
+                source_topic=topic,
+                partition=partition,
+                offset=offset,
                 key=msg.key(),
                 value=msg.value(),
                 error=exc,

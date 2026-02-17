@@ -1,7 +1,4 @@
-"""Unit tests for CDCConsumer.commit_offsets()."""
-
-from __future__ import annotations
-
+import asyncio
 from unittest.mock import MagicMock, patch
 
 from cdc_platform.streaming.consumer import CDCConsumer
@@ -23,8 +20,10 @@ def _make_consumer() -> CDCConsumer:
                 group_id="test-group",
                 auto_offset_reset="earliest",
             ),
-            handler=lambda k, v, m: None,
+            handler=MagicMock(return_value=asyncio.Future()),
         )
+        # Setup the mock to be awaitable
+        consumer._handler.return_value.set_result(None)
     return consumer
 
 
@@ -50,7 +49,7 @@ class TestRebalanceCallbacks:
                     group_id="test-group",
                     auto_offset_reset="earliest",
                 ),
-                handler=lambda k, v, m: None,
+                handler=MagicMock(return_value=asyncio.Future()),
                 on_assign=on_assign,
             )
 
@@ -83,7 +82,7 @@ class TestRebalanceCallbacks:
                     group_id="test-group",
                     auto_offset_reset="earliest",
                 ),
-                handler=lambda k, v, m: None,
+                handler=MagicMock(return_value=asyncio.Future()),
                 on_revoke=on_revoke,
             )
 
