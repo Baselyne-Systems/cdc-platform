@@ -216,14 +216,16 @@ class TestIcebergTimeTravel:
     def test_scan_at_snapshot_with_limit(self):
         table = MagicMock()
         arrow_result = MagicMock()
-        table.scan.return_value.limit.return_value.to_arrow.return_value = arrow_result
+        sliced_result = MagicMock()
+        arrow_result.slice.return_value = sliced_result
+        table.scan.return_value.to_arrow.return_value = arrow_result
 
         tt = IcebergTimeTravel(table, "default.events")
         result = tt.scan_at_snapshot(snapshot_id=123, limit=10)
 
         table.scan.assert_called_once_with(snapshot_id=123)
-        table.scan.return_value.limit.assert_called_once_with(10)
-        assert result is arrow_result
+        arrow_result.slice.assert_called_once_with(0, 10)
+        assert result is sliced_result
 
     def test_scan_at_snapshot_without_limit(self):
         table = MagicMock()
@@ -234,7 +236,7 @@ class TestIcebergTimeTravel:
         result = tt.scan_at_snapshot(snapshot_id=123)
 
         table.scan.assert_called_once_with(snapshot_id=123)
-        table.scan.return_value.limit.assert_not_called()
+        arrow_result.slice.assert_not_called()
         assert result is arrow_result
 
     def test_rollback_invalid_snapshot_raises(self):
@@ -318,12 +320,11 @@ class TestLakehouseCLI:
         mock_table = MagicMock()
         mock_arrow = MagicMock()
         mock_arrow.num_rows = 5
-        mock_df = MagicMock()
-        mock_df.to_string.return_value = "col1  col2\n1     2"
-        mock_arrow.to_pandas.return_value = mock_df
-        mock_table.scan.return_value.limit.return_value.to_arrow.return_value = (
-            mock_arrow
-        )
+        mock_sliced = MagicMock()
+        mock_sliced.num_rows = 5
+        mock_sliced.to_pydict.return_value = {"col1": [1, 2], "col2": [3, 4]}
+        mock_arrow.slice.return_value = mock_sliced
+        mock_table.scan.return_value.to_arrow.return_value = mock_arrow
 
         with patch(
             "cdc_platform.cli._load_iceberg_table",

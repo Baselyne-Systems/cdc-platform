@@ -310,7 +310,7 @@ def lakehouse_query(
     console.print(
         f"[green]Snapshot {snapshot_id}[/green] — {arrow_table.num_rows} rows"
     )
-    console.print(arrow_table.to_pandas().to_string())
+    console.print(arrow_table.to_pydict())
 
 
 @lakehouse_app.command("rollback")

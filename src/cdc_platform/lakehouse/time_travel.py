@@ -25,9 +25,10 @@ class IcebergTimeTravel:
     def scan_at_snapshot(self, snapshot_id: int, limit: int | None = None) -> Any:
         """Return an Arrow table from a point-in-time scan."""
         scan = self._table.scan(snapshot_id=snapshot_id)
+        result = scan.to_arrow()
         if limit is not None:
-            scan = scan.limit(limit)
-        return scan.to_arrow()
+            result = result.slice(0, limit)
+        return result
 
     def rollback_to_snapshot(self, snapshot_id: int) -> None:
         """Roll the table back to a previous snapshot."""
