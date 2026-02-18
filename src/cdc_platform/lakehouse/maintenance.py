@@ -125,9 +125,8 @@ class TableMaintenanceMonitor:
         if total_files < self._config.compaction_file_threshold:
             return
 
-        scan = self._table.scan()
-        arrow_table = scan.to_arrow()
-        total_rows = arrow_table.num_rows
+        # Estimate row count from manifest metadata — no data I/O
+        total_rows = sum(m.added_rows_count + m.existing_rows_count for m in manifests)
 
         if total_rows > self._config.compaction_max_rows_per_batch:
             logger.warning(
@@ -139,6 +138,8 @@ class TableMaintenanceMonitor:
             )
             return
 
+        # Only materialize after confirming the table fits in memory
+        arrow_table = self._table.scan().to_arrow()
         self._table.overwrite(arrow_table)
         logger.info(
             "table_maintenance.compacted_unpartitioned",
@@ -186,8 +187,9 @@ class TableMaintenanceMonitor:
                 from pyiceberg.expressions import EqualTo
 
                 partition_filter = EqualTo(
-                    term=partition_field_name, literal=partition_key
-                )  # type: ignore[call-arg,arg-type]
+                    term=partition_field_name,  # type: ignore[arg-type]
+                    literal=partition_key,
+                )  # type: ignore[call-arg]
                 arrow_table = self._table.scan().filter(partition_filter).to_arrow()
                 total_rows = arrow_table.num_rows
 

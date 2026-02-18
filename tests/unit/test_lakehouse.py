@@ -149,11 +149,9 @@ class TestCompaction:
         manifest = MagicMock()
         manifest.added_files_count = 8
         manifest.existing_files_count = 5
+        manifest.added_rows_count = 600_000
+        manifest.existing_rows_count = 400_000
         snapshot.manifests.return_value = [manifest]
-
-        arrow_result = MagicMock()
-        arrow_result.num_rows = 1_000_000
-        table.scan.return_value.to_arrow.return_value = arrow_result
 
         monitor = TableMaintenanceMonitor(
             table=table,
