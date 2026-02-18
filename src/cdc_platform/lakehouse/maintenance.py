@@ -11,6 +11,11 @@ import structlog
 
 from cdc_platform.config.models import TableMaintenanceConfig
 
+try:
+    from pyiceberg.expressions import EqualTo
+except ImportError:  # pragma: no cover
+    EqualTo = None  # type: ignore[assignment,misc]
+
 logger = structlog.get_logger()
 
 
@@ -184,8 +189,6 @@ class TableMaintenanceMonitor:
                 continue
 
             try:
-                from pyiceberg.expressions import EqualTo
-
                 partition_filter = EqualTo(
                     term=partition_field_name,  # type: ignore[arg-type]
                     literal=partition_key,

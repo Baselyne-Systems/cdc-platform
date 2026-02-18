@@ -96,7 +96,7 @@ class TestCompaction:
             config=TableMaintenanceConfig(enabled=True, compaction_file_threshold=10),
         )
 
-        with patch("cdc_platform.lakehouse.maintenance.EqualTo", create=True):
+        with patch("cdc_platform.lakehouse.maintenance.EqualTo"):
             monitor._do_compact()
 
         table.overwrite.assert_called_once()
@@ -135,7 +135,7 @@ class TestCompaction:
             ),
         )
 
-        with patch("cdc_platform.lakehouse.maintenance.EqualTo", create=True):
+        with patch("cdc_platform.lakehouse.maintenance.EqualTo"):
             monitor._do_compact()
 
         table.overwrite.assert_not_called()
