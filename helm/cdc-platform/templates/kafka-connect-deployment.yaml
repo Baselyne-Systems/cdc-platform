@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cdc-platform.fullname" . }}-connect
+  labels:
+    {{- include "cdc-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kafka-connect
+spec:
+  replicas: {{ .Values.kafkaConnect.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "cdc-platform.connectSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "cdc-platform.connectSelectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: kafka-connect
+          image: "{{ .Values.kafkaConnect.image.repository }}:{{ .Values.kafkaConnect.image.tag }}"
+          imagePullPolicy: {{ .Values.kafkaConnect.image.pullPolicy }}
+          command:
+            - /bin/bash
+            - -c
+            - connect-distributed /etc/kafka-connect/connect-distributed.properties
+          ports:
+            - name: rest
+              containerPort: 8083
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: rest
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /connectors
+              port: rest
+            initialDelaySeconds: 45
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.kafkaConnect.resources | nindent 12 }}
+          volumeMounts:
+            - name: connect-config
+              mountPath: /etc/kafka-connect
+              readOnly: true
+          {{- with .Values.kafkaConnect.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: connect-config
+          configMap:
+            name: {{ include "cdc-platform.fullname" . }}-connect-config
+      {{- with .Values.kafkaConnect.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.kafkaConnect.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.kafkaConnect.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cdc-platform.fullname" . }}-connect-config
+  labels:
+    {{- include "cdc-platform.labels" . | nindent 4 }}
+data:
+  connect-distributed.properties: |
+    bootstrap.servers={{ include "cdc-platform.kafkaBootstrapServers" . }}
+    group.id=cdc-connect-cluster
+    key.converter=io.confluent.connect.avro.AvroConverter
+    key.converter.schema.registry.url={{ include "cdc-platform.schemaRegistryUrl" . }}
+    value.converter=io.confluent.connect.avro.AvroConverter
+    value.converter.schema.registry.url={{ include "cdc-platform.schemaRegistryUrl" . }}
+    config.storage.topic=_connect-configs
+    offset.storage.topic=_connect-offsets
+    status.storage.topic=_connect-status
+    config.storage.replication.factor=1
+    offset.storage.replication.factor=1
+    status.storage.replication.factor=1
+    plugin.path=/usr/share/java,/usr/share/confluent-hub-components

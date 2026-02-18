@@ -28,11 +28,11 @@ def _make_consumer() -> CDCConsumer:
 
 
 class TestRebalanceCallbacks:
-    def test_on_assign_callback_wired(self):
+    async def test_on_assign_callback_wired(self):
         """on_assign callback is stored and invoked on partition assignment."""
-        assigned = []
+        assigned: list[tuple[str, int]] = []
 
-        def on_assign(partitions):
+        def on_assign(partitions: list[tuple[str, int]]) -> None:
             assigned.extend(partitions)
 
         with (
@@ -53,19 +53,25 @@ class TestRebalanceCallbacks:
                 on_assign=on_assign,
             )
 
-        # Simulate Kafka calling the assign handler
+        # Set the loop so call_soon_threadsafe works
+        consumer._loop = asyncio.get_running_loop()
+
+        # Simulate Kafka calling the assign handler from a thread
         mock_tp = MagicMock()
         mock_tp.topic = "test-topic"
         mock_tp.partition = 0
         consumer._handle_assign(None, [mock_tp])
 
+        # Yield control so the scheduled callback executes
+        await asyncio.sleep(0)
+
         assert assigned == [("test-topic", 0)]
 
-    def test_on_revoke_callback_wired(self):
+    async def test_on_revoke_callback_wired(self):
         """on_revoke callback is stored and invoked on partition revocation."""
-        revoked = []
+        revoked: list[tuple[str, int]] = []
 
-        def on_revoke(partitions):
+        def on_revoke(partitions: list[tuple[str, int]]) -> None:
             revoked.extend(partitions)
 
         with (
@@ -86,10 +92,14 @@ class TestRebalanceCallbacks:
                 on_revoke=on_revoke,
             )
 
+        consumer._loop = asyncio.get_running_loop()
+
         mock_tp = MagicMock()
         mock_tp.topic = "test-topic"
         mock_tp.partition = 2
         consumer._handle_revoke(None, [mock_tp])
+
+        await asyncio.sleep(0)
 
         assert revoked == [("test-topic", 2)]
 

@@ -33,3 +33,5 @@ partition_concurrency: 0
 schema_monitor_interval_seconds: 30.0
 lag_monitor_interval_seconds: 15.0
 stop_on_incompatible_schema: false
+health_port: 8080
+health_enabled: true

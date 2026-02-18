@@ -1,0 +1,11 @@
+# Kafka Connect image with Debezium connector plugins pre-installed.
+# Used by the platform Helm chart for the Kafka Connect Deployment.
+#
+# Usage:
+#   docker build -f Dockerfile.connect -t cdc-kafka-connect .
+
+FROM confluentinc/cp-kafka-connect-base:7.7.1
+
+# Install Debezium Postgres and MySQL connector plugins via confluent-hub.
+RUN confluent-hub install --no-prompt debezium/debezium-connector-postgresql:latest && \
+    confluent-hub install --no-prompt debezium/debezium-connector-mysql:latest

@@ -215,3 +215,5 @@ class PlatformConfig(BaseModel):
     schema_monitor_interval_seconds: float = 30.0
     lag_monitor_interval_seconds: float = 15.0
     stop_on_incompatible_schema: bool = False
+    health_port: int = 8080
+    health_enabled: bool = True

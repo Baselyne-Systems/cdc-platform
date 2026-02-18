@@ -1,0 +1,14 @@
+# Platform config for E2E tests — Docker-internal hostnames.
+kafka:
+  bootstrap_servers: kafka:29092
+  schema_registry_url: http://schema-registry:8081
+  group_id: cdc-e2e
+
+connector:
+  connect_url: http://connect:8083
+  timeout_seconds: 60
+  retry_max_attempts: 10
+  retry_wait_seconds: 3
+
+health_port: 8080
+health_enabled: true

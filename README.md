@@ -48,6 +48,21 @@ The source database and sink destinations are the only components outside the pl
 - **CLI tooling** — validate configs, deploy connectors, check health, debug-consume, and run pipelines
 - **Observability** — structured logging (structlog), health probes, consumer lag metrics per partition
 
+## Deployment
+
+For production Kubernetes deployments, see **[docs/deployment.md](docs/deployment.md)** — covers the platform Helm chart, pipeline Docker images, health probes, configuration, and a production checklist.
+
+**Quick Docker example:**
+
+```bash
+docker run --rm \
+  -v ./pipeline.yaml:/config/pipeline.yaml \
+  -v ./platform.yaml:/config/platform.yaml \
+  -e CDC_SOURCE_PASSWORD=secret \
+  -p 8080:8080 \
+  ghcr.io/baselyne-systems/cdc-platform:latest
+```
+
 ## Quick Start
 
 ### Prerequisites
@@ -234,6 +249,8 @@ These configure the platform's managed infrastructure. They live in `platform.ya
 | `schema_monitor_interval_seconds`| `30.0`  | How often to poll Schema Registry for version changes. Lower = faster detection, higher registry load. |
 | `lag_monitor_interval_seconds`   | `15.0`  | How often to query and log consumer lag. Creates a short-lived Kafka admin connection on each poll. |
 | `stop_on_incompatible_schema`    | `false` | When `true`, halt the pipeline on backward-incompatible schema changes (field removal, type narrowing). When `false`, log and continue. |
+| `health_port`                    | `8080`  | TCP port for the HTTP health server (`/healthz`, `/readyz`). |
+| `health_enabled`                 | `true`  | Enable the health HTTP server for Kubernetes liveness/readiness probes. |
 
 **Dead Letter Queue** (`dlq.*`) — Platform-managed error routing for sink write failures.
 
@@ -314,10 +331,11 @@ The source database and sink destinations are the only things outside the platfo
 2. **Connector deployment** — A Debezium PostgreSQL connector is registered via the Kafka Connect REST API
 3. **Sink initialization** — All enabled sinks are started (connections opened, clients initialized)
 4. **Schema + lag monitors started** — Background tasks begin polling the Schema Registry and Kafka for version changes and consumer lag
-5. **Consume loop** — An async consumer polls Kafka in a background thread, deserializes Avro messages, and enqueues to per-partition bounded queues
-6. **Parallel dispatch** — Each partition has its own async worker that drains its queue and dispatches to all sinks concurrently
-7. **Offset management** — Offsets are committed at the min-watermark across all sinks (see below)
-8. **Graceful shutdown** — On SIGINT/SIGTERM, monitors are stopped, partition workers are cancelled, all sinks are flushed and stopped, and a final offset commit is issued
+5. **Health server started** — HTTP health endpoints (`/healthz`, `/readyz`) become available for Kubernetes probes
+6. **Consume loop** — An async consumer polls Kafka in a background thread, deserializes Avro messages, and enqueues to per-partition bounded queues
+7. **Parallel dispatch** — Each partition has its own async worker that drains its queue and dispatches to all sinks concurrently
+8. **Offset management** — Offsets are committed at the min-watermark across all sinks (see below)
+9. **Graceful shutdown** — On SIGINT/SIGTERM, health server stops (readiness probe fails, traffic drains), monitors are stopped, partition workers are cancelled, all sinks are flushed and stopped, and a final offset commit is issued
 
 ### Exactly-once delivery
 
@@ -412,6 +430,13 @@ partitions:
 
 Lag data is also included in the health endpoint response under the `consumer_lag` key.
 
+**HTTP health server** — When `health_enabled: true` (default), the pipeline starts a lightweight async HTTP server on `health_port` (default 8080) for Kubernetes probes:
+
+| Endpoint | Purpose | K8s Probe |
+|----------|---------|-----------|
+| `GET /healthz` | Liveness — always returns 200 if the process is running | `livenessProbe` |
+| `GET /readyz` | Readiness — delegates to `Pipeline.health()`, returns 200 if healthy, 503 if any component reports an error | `readinessProbe` |
+
 **Health endpoint** — `Pipeline.health()` returns:
 
 ```json
@@ -492,14 +517,22 @@ src/cdc_platform/
 │   └── runner.py                   # Pipeline orchestrator (partition queues, backpressure, monitors)
 └── observability/
     ├── health.py                   # Component health probes
+    ├── http_health.py              # Async HTTP health server for K8s probes (/healthz, /readyz)
     └── metrics.py                  # Consumer lag metrics + LagMonitor periodic reporter
 
+Dockerfile                          # Pipeline worker image (multi-stage, non-root)
+Dockerfile.connect                  # Kafka Connect + Debezium plugins image
 docker/
 ├── docker-compose.yml              # Full local stack
 ├── connect/
 │   └── Dockerfile                  # Custom Kafka Connect image with Confluent Avro converter JARs
 └── postgres/
     └── init.sql                    # Demo schema (customers + orders)
+
+helm/cdc-platform/                  # Platform Helm chart (Kafka, Schema Registry, Kafka Connect)
+├── Chart.yaml
+├── values.yaml
+└── templates/
 
 tests/
 ├── unit/                           # Unit tests (no Docker required)

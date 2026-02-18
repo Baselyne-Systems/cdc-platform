@@ -1,4 +1,4 @@
-.PHONY: up down build test-unit test-integration lint fmt health clean
+.PHONY: up down build test-unit test-integration test-e2e lint fmt health clean
 
 COMPOSE := docker compose -f docker/docker-compose.yml
 
@@ -16,6 +16,9 @@ test-unit:
 
 test-integration:  ## Manages Docker lifecycle automatically — do not run `make up` first
 	uv run pytest tests/integration/ -v -m integration
+
+test-e2e:  ## E2E test: builds Docker images, boots infra, verifies health probes + connector
+	./scripts/test-e2e.sh
 
 bench:  ## Run benchmark tests (manages Docker lifecycle automatically)
 	$(COMPOSE) up -d --wait

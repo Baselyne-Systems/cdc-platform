@@ -1,0 +1,17 @@
+# Pipeline config for E2E tests — source uses Docker-internal hostname.
+pipeline_id: e2e-test
+topic_prefix: cdc_e2e
+
+source:
+  host: postgres
+  database: cdc_demo
+  username: cdc_user
+  password: cdc_password
+  tables:
+    - public.customers
+  slot_name: e2e_test_slot
+  publication_name: e2e_test_pub
+  snapshot_mode: initial
+
+# No sinks — E2E test validates image build, health probes, and connector registration.
+sinks: []

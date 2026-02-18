@@ -10,6 +10,7 @@ import structlog
 from confluent_kafka import Message
 
 from cdc_platform.config.models import PipelineConfig, PlatformConfig
+from cdc_platform.observability.http_health import HealthServer
 from cdc_platform.observability.metrics import LagMonitor
 from cdc_platform.sinks.base import SinkConnector
 from cdc_platform.sinks.factory import create_sink
@@ -44,6 +45,7 @@ class Pipeline:
         self._partition_workers: dict[tuple[str, int], asyncio.Task[None]] = {}
         self._schema_monitor: SchemaMonitor | None = None
         self._lag_monitor: LagMonitor | None = None
+        self._health_server: HealthServer | None = None
 
     def start(self) -> None:
         """Start the full pipeline (blocking)."""
@@ -107,6 +109,14 @@ class Pipeline:
         )
         await self._lag_monitor.start()
 
+        # 8. Start health server
+        if self._platform.health_enabled:
+            self._health_server = HealthServer(
+                port=self._platform.health_port,
+                readiness_check=self.health,
+            )
+            await self._health_server.start()
+
         logger.info(
             "pipeline.started",
             pipeline_id=self._pipeline.pipeline_id,
@@ -114,7 +124,7 @@ class Pipeline:
             topics=cdc_topics,
         )
 
-        # 8. Consume (async) — polls in a thread, enqueues to partition queues
+        # 9. Consume (async) — polls in a thread, enqueues to partition queues
         try:
             await self._consumer.consume()
         finally:
@@ -213,7 +223,9 @@ class Pipeline:
         self._maybe_commit_watermark()
 
     async def _shutdown(self) -> None:
-        """Stop monitors, drain workers, flush sinks."""
+        """Stop health server, monitors, drain workers, flush sinks."""
+        if self._health_server:
+            await self._health_server.stop()
         if self._schema_monitor:
             await self._schema_monitor.stop()
         if self._lag_monitor:

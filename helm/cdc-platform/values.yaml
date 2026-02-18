@@ -1,0 +1,43 @@
+# -- CDC Platform shared infrastructure values --
+
+# Bitnami Kafka sub-chart.
+# Set kafka.enabled=false when using an external Kafka cluster (e.g. Confluent Cloud, Amazon MSK).
+kafka:
+  enabled: true
+  replicaCount: 3
+  # listeners:
+  #   client:
+  #     protocol: PLAINTEXT
+  # kraft:
+  #   enabled: true
+
+# Bitnami Schema Registry sub-chart.
+# Set schemaRegistry.enabled=false when using an external registry.
+schemaRegistry:
+  enabled: true
+
+# Kafka Connect Deployment (runs Debezium connector plugins).
+kafkaConnect:
+  replicaCount: 1
+  image:
+    repository: ghcr.io/baselyne-systems/cdc-kafka-connect
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  # Extra environment variables for the Connect worker.
+  extraEnv: []
+  # Node selector, tolerations, affinity.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# Optional MinIO for Iceberg warehouse storage.
+# Enable this if you need S3-compatible object storage in-cluster.
+minio:
+  enabled: false

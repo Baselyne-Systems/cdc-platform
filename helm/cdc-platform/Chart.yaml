@@ -1,0 +1,16 @@
+apiVersion: v2
+name: cdc-platform
+description: CDC Platform shared infrastructure — Kafka, Schema Registry, and Kafka Connect with Debezium
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+
+dependencies:
+  - name: kafka
+    version: "30.x.x"
+    repository: https://charts.bitnami.com/bitnami
+    condition: kafka.enabled
+  - name: schema-registry
+    version: "21.x.x"
+    repository: https://charts.bitnami.com/bitnami
+    condition: schemaRegistry.enabled

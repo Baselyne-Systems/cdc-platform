@@ -55,6 +55,7 @@ class CDCConsumer:
         self._topics = topics
         self._kafka_config = kafka_config
         self._running = False
+        self._loop: asyncio.AbstractEventLoop | None = None
 
         registry = SchemaRegistryClient({"url": kafka_config.schema_registry_url})
         self._key_deser = AvroDeserializer(registry)
@@ -93,16 +94,19 @@ class CDCConsumer:
         return key, value
 
     def _handle_assign(self, consumer: Any, partitions: list[Any]) -> None:
-        if self._on_assign:
-            self._on_assign([(tp.topic, tp.partition) for tp in partitions])
+        if self._on_assign and self._loop:
+            tps = [(tp.topic, tp.partition) for tp in partitions]
+            self._loop.call_soon_threadsafe(self._on_assign, tps)
 
     def _handle_revoke(self, consumer: Any, partitions: list[Any]) -> None:
-        if self._on_revoke:
-            self._on_revoke([(tp.topic, tp.partition) for tp in partitions])
+        if self._on_revoke and self._loop:
+            tps = [(tp.topic, tp.partition) for tp in partitions]
+            self._loop.call_soon_threadsafe(self._on_revoke, tps)
 
     async def consume(self, *, poll_timeout: float = 1.0) -> None:
         """Async consume loop — polls in a thread, awaits async handler."""
         self._running = True
+        self._loop = asyncio.get_running_loop()
         self._consumer.subscribe(
             self._topics,
             on_assign=self._handle_assign,
