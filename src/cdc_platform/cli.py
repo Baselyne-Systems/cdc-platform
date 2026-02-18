@@ -24,6 +24,8 @@ from cdc_platform.streaming.consumer import CDCConsumer
 logger = structlog.get_logger()
 console = Console()
 app = typer.Typer(name="cdc", help="CDC Platform CLI")
+lakehouse_app = typer.Typer(name="lakehouse", help="Iceberg lakehouse operations")
+app.add_typer(lakehouse_app)
 
 
 def _load(
@@ -176,3 +178,176 @@ def run(
         runner.start()
     except KeyboardInterrupt:
         runner.stop()
+
+
+# ---------------------------------------------------------------------------
+# Lakehouse sub-commands
+# ---------------------------------------------------------------------------
+
+
+def _load_iceberg_table(
+    config_path: str,
+    platform_config: str | None,
+    sink_id: str | None,
+) -> Any:
+    """Load a pyiceberg Table object from pipeline config."""
+    from pyiceberg.catalog import load_catalog
+
+    pipeline, _platform = _load(config_path, platform_config)
+
+    from cdc_platform.config.models import SinkType
+
+    iceberg_sinks = [
+        s
+        for s in pipeline.sinks
+        if s.sink_type == SinkType.ICEBERG and s.iceberg is not None
+    ]
+    if not iceberg_sinks:
+        console.print("[red]No Iceberg sinks found in pipeline config[/red]")
+        raise typer.Exit(1)
+
+    if sink_id:
+        matches = [s for s in iceberg_sinks if s.sink_id == sink_id]
+        if not matches:
+            console.print(f"[red]Sink '{sink_id}' not found[/red]")
+            raise typer.Exit(1)
+        sink_cfg = matches[0]
+    else:
+        sink_cfg = iceberg_sinks[0]
+
+    ice = sink_cfg.iceberg
+    assert ice is not None
+    catalog_props: dict[str, str] = {
+        "uri": ice.catalog_uri,
+        "warehouse": ice.warehouse,
+    }
+    if ice.s3_endpoint is not None:
+        catalog_props["s3.endpoint"] = ice.s3_endpoint
+    if ice.s3_access_key_id is not None:
+        catalog_props["s3.access-key-id"] = ice.s3_access_key_id
+    if ice.s3_secret_access_key is not None:
+        catalog_props["s3.secret-access-key"] = (
+            ice.s3_secret_access_key.get_secret_value()
+        )
+    catalog_props["s3.region"] = ice.s3_region
+
+    catalog = load_catalog(ice.catalog_name, **catalog_props)
+    full_name = f"{ice.table_namespace}.{ice.table_name}"
+    return catalog.load_table(full_name), full_name
+
+
+@lakehouse_app.command("snapshots")
+def lakehouse_snapshots(
+    config_path: str = typer.Argument(..., help="Path to pipeline YAML"),
+    sink_id: str | None = typer.Option(None, "--sink-id", help="Iceberg sink ID"),
+    platform_config: str | None = typer.Option(
+        None, "--platform-config", help="Platform YAML"
+    ),
+) -> None:
+    """List snapshots for an Iceberg table."""
+    try:
+        ice_table, full_name = _load_iceberg_table(
+            config_path, platform_config, sink_id
+        )
+    except Exception as exc:
+        console.print(f"[red]Error loading table:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    from cdc_platform.lakehouse.time_travel import IcebergTimeTravel
+
+    tt = IcebergTimeTravel(ice_table, full_name)
+    snapshots = tt.list_snapshots()
+
+    if not snapshots:
+        console.print("[yellow]No snapshots found[/yellow]")
+        return
+
+    table = Table(title=f"Snapshots — {full_name}")
+    table.add_column("Snapshot ID", style="cyan")
+    table.add_column("Timestamp (ms)")
+    table.add_column("Operation")
+    table.add_column("Summary")
+
+    for snap in snapshots:
+        table.add_row(
+            str(snap.get("snapshot_id", "")),
+            str(snap.get("committed_at", "")),
+            str(snap.get("operation", "")),
+            str(snap.get("summary", "")),
+        )
+
+    console.print(table)
+
+
+@lakehouse_app.command("query")
+def lakehouse_query(
+    config_path: str = typer.Argument(..., help="Path to pipeline YAML"),
+    snapshot_id: int = typer.Option(..., "--snapshot-id", help="Snapshot ID to query"),
+    limit: int = typer.Option(20, "--limit", help="Max rows to return"),
+    sink_id: str | None = typer.Option(None, "--sink-id", help="Iceberg sink ID"),
+    platform_config: str | None = typer.Option(
+        None, "--platform-config", help="Platform YAML"
+    ),
+) -> None:
+    """Time-travel query at a specific snapshot."""
+    try:
+        ice_table, full_name = _load_iceberg_table(
+            config_path, platform_config, sink_id
+        )
+    except Exception as exc:
+        console.print(f"[red]Error loading table:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    from cdc_platform.lakehouse.time_travel import IcebergTimeTravel
+
+    tt = IcebergTimeTravel(ice_table, full_name)
+    try:
+        arrow_table = tt.scan_at_snapshot(snapshot_id, limit=limit)
+    except Exception as exc:
+        console.print(f"[red]Query failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    console.print(
+        f"[green]Snapshot {snapshot_id}[/green] — {arrow_table.num_rows} rows"
+    )
+    console.print(arrow_table.to_pandas().to_string())
+
+
+@lakehouse_app.command("rollback")
+def lakehouse_rollback(
+    config_path: str = typer.Argument(..., help="Path to pipeline YAML"),
+    snapshot_id: int = typer.Option(
+        ..., "--snapshot-id", help="Snapshot ID to rollback to"
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+    sink_id: str | None = typer.Option(None, "--sink-id", help="Iceberg sink ID"),
+    platform_config: str | None = typer.Option(
+        None, "--platform-config", help="Platform YAML"
+    ),
+) -> None:
+    """Rollback an Iceberg table to a previous snapshot."""
+    try:
+        ice_table, full_name = _load_iceberg_table(
+            config_path, platform_config, sink_id
+        )
+    except Exception as exc:
+        console.print(f"[red]Error loading table:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    if not yes:
+        confirm = typer.confirm(f"Rollback '{full_name}' to snapshot {snapshot_id}?")
+        if not confirm:
+            console.print("[yellow]Cancelled[/yellow]")
+            raise typer.Exit(0)
+
+    from cdc_platform.lakehouse.time_travel import IcebergTimeTravel
+
+    tt = IcebergTimeTravel(ice_table, full_name)
+    try:
+        tt.rollback_to_snapshot(snapshot_id)
+        console.print(
+            f"[green]Rolled back '{full_name}' to snapshot {snapshot_id}[/green]"
+        )
+    except Exception as exc:
+        console.print(f"[red]Rollback failed:[/red] {exc}")
+        raise typer.Exit(1) from exc

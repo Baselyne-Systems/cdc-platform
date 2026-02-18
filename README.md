@@ -23,7 +23,7 @@ CDC Platform owns the full pipeline from source database to sink destination. It
  │              │           │           │                │
  │         Worker(p0)  Worker(p1)  Worker(p2)──▸ sinks   │
  │                                                       │
- │         schema monitor     lag monitor                │
+ │         schema monitor     lag monitor     table maintenance  │
  └───────────────────────────────────────────────────────┘
          ▲                                     │
     source DB                          sink destinations:
@@ -43,6 +43,8 @@ The source database and sink destinations are the only components outside the pl
 - **Avro serialization** — schema evolution managed by Confluent Schema Registry
 - **Retry with backoff** — configurable exponential backoff with jitter on all sink writes
 - **Defaults-based config** — built-in defaults with per-pipeline overrides, validated by Pydantic
+- **Lakehouse maintenance** — background compaction and snapshot expiry for Iceberg tables
+- **Time travel & rollback** — CLI commands for point-in-time queries and snapshot rollback
 - **CLI tooling** — validate configs, deploy connectors, check health, debug-consume, and run pipelines
 - **Observability** — structured logging (structlog), health probes, consumer lag metrics per partition
 
@@ -250,7 +252,18 @@ Sinks are the external systems the platform writes to. Each sink is independentl
 
 **PostgreSQL** — Batched inserts to a target table. Columns: `event_key`, `event_value`, `source_topic`, `source_partition`, `source_offset`. Set `upsert: true` for idempotent writes via `ON CONFLICT` (requires a unique constraint on `source_topic, source_partition, source_offset`).
 
-**Apache Iceberg** — Batched appends or upserts to an Iceberg table. CDC metadata is stored in `_cdc_topic`, `_cdc_partition`, `_cdc_offset` columns. Supports auto table creation, partitioning, and S3/local warehouses.
+**Apache Iceberg** — Batched appends or upserts to an Iceberg table. CDC metadata is stored in `_cdc_topic`, `_cdc_partition`, `_cdc_offset` columns. Supports auto table creation, partitioning, S3/local warehouses, and background table maintenance (compaction + snapshot expiry). See the `maintenance` nested config below and [docs/lakehouse.md](docs/lakehouse.md) for full documentation.
+
+**Iceberg table maintenance** (`iceberg.maintenance.*`) — Background service for compaction and snapshot expiry. Disabled by default.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `maintenance.enabled` | `false` | Enable background maintenance |
+| `maintenance.expire_snapshots_interval_seconds` | `3600.0` | Snapshot expiry poll interval |
+| `maintenance.expire_snapshots_older_than_seconds` | `86400.0` | Expire snapshots older than this |
+| `maintenance.compaction_interval_seconds` | `7200.0` | Compaction poll interval |
+| `maintenance.compaction_file_threshold` | `10` | Min files before compaction triggers |
+| `maintenance.compaction_max_rows_per_batch` | `500000` | Safety limit per compaction pass |
 
 ### Retry configuration
 
@@ -277,6 +290,9 @@ cdc consume <pipeline.yaml>                               Start a debug console 
 cdc consume <pipeline.yaml> --platform-config prod.yaml   Consume with custom platform
 cdc run <pipeline.yaml>                                   Run with default platform
 cdc run <pipeline.yaml> --platform-config prod.yaml       Run with custom platform
+cdc lakehouse snapshots <pipeline.yaml>                   List Iceberg table snapshots
+cdc lakehouse query <pipeline.yaml> --snapshot-id 123     Time-travel query at snapshot
+cdc lakehouse rollback <pipeline.yaml> --snapshot-id 123  Rollback to snapshot (with --yes)
 ```
 
 ## Architecture
@@ -463,6 +479,9 @@ src/cdc_platform/
 │   ├── topics.py                   # Topic naming and admin utilities
 │   ├── registry.py                 # Schema Registry integration
 │   └── schema_monitor.py           # Schema Registry version change monitor
+├── lakehouse/
+│   ├── maintenance.py              # Background compaction + snapshot expiry
+│   └── time_travel.py              # Snapshot listing, time-travel scan, rollback
 ├── sinks/
 │   ├── base.py                     # SinkConnector protocol
 │   ├── factory.py                  # Sink factory (type -> class registry)
@@ -520,6 +539,11 @@ Prerequisites for integration tests:
 
 The platform includes a dedicated benchmark suite to measure throughput, latency, backpressure, and scaling.
 See [docs/benchmarks.md](docs/benchmarks.md) for full documentation.
+
+### Lakehouse Features
+
+The Iceberg sink supports table maintenance and time-travel operations.
+See [docs/lakehouse.md](docs/lakehouse.md) for full documentation.
 
 ### Linting and formatting
 

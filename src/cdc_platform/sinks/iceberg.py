@@ -25,6 +25,7 @@ class IcebergSink:
         self._table: Any = None
         self._buffer: list[dict[str, Any]] = []
         self._flushed_offsets: dict[tuple[str, int], int] = {}
+        self._maintenance_monitor: Any = None
 
     @property
     def sink_id(self) -> str:
@@ -82,6 +83,16 @@ class IcebergSink:
                 sink_id=self.sink_id,
                 table=full_name,
             )
+
+        if self._ice_config.maintenance.enabled and self._table is not None:
+            from cdc_platform.lakehouse.maintenance import TableMaintenanceMonitor
+
+            self._maintenance_monitor = TableMaintenanceMonitor(
+                table=self._table,
+                table_name=full_name,
+                config=self._ice_config.maintenance,
+            )
+            await self._maintenance_monitor.start()
 
         logger.info("iceberg_sink.started", sink_id=self.sink_id)
 
@@ -158,6 +169,9 @@ class IcebergSink:
         )
 
     async def stop(self) -> None:
+        if self._maintenance_monitor is not None:
+            await self._maintenance_monitor.stop()
+            self._maintenance_monitor = None
         await self.flush()
         self._catalog = None
         self._table = None

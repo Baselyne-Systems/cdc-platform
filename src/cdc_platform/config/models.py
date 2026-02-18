@@ -138,6 +138,17 @@ class PostgresSinkConfig(BaseModel):
         return v
 
 
+class TableMaintenanceConfig(BaseModel):
+    """Configuration for Iceberg table maintenance (compaction + snapshot expiry)."""
+
+    enabled: bool = False
+    expire_snapshots_interval_seconds: float = 3600.0
+    expire_snapshots_older_than_seconds: float = 86400.0
+    compaction_interval_seconds: float = 7200.0
+    compaction_file_threshold: int = 10
+    compaction_max_rows_per_batch: int = 500_000
+
+
 class IcebergSinkConfig(BaseModel):
     """Configuration for an Apache Iceberg lakehouse sink."""
 
@@ -154,6 +165,7 @@ class IcebergSinkConfig(BaseModel):
     s3_access_key_id: str | None = None
     s3_secret_access_key: SecretStr | None = None
     s3_region: str = "us-east-1"
+    maintenance: TableMaintenanceConfig = TableMaintenanceConfig()
 
 
 class SinkConfig(BaseModel):
