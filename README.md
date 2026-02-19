@@ -6,41 +6,45 @@ A modular, extensible CDC platform for streaming changes from operational databa
 
 ## Overview
 
-CDC Platform owns the full pipeline from source database to sink destination. It provisions Kafka topics, deploys Debezium connectors, manages consumer groups and offset lifecycle, monitors schemas via the Confluent Schema Registry, and routes events to configurable sinks — webhooks, PostgreSQL replicas, and Apache Iceberg lakehouse tables. Events are serialized with Avro and delivered with exactly-once guarantees through min-watermark offset commits and idempotent writes.
+CDC Platform owns the full pipeline from source database to sink destination. It provisions transport resources, deploys source connectors, manages consumer groups and offset lifecycle, monitors schemas, and routes events to configurable sinks — webhooks, PostgreSQL replicas, and Apache Iceberg lakehouse tables. The platform uses a **transport-agnostic architecture** — the core pipeline is decoupled from any specific event transport through protocol-based abstractions. Kafka is the default transport (including MSK and Confluent Cloud), with the architecture designed to support additional transports (Pub/Sub, embedded PG) without modifying the core pipeline. Events are delivered with exactly-once guarantees through min-watermark offset commits and idempotent writes.
 
 ```
  ┌─────────────────── CDC Platform ──────────────────────────────┐
  │                                                               │
- │  ┌───────────┐   ┌──────────────────────────────┐             │
- │  │  Debezium │──▸│ Kafka (topics, DLQ, schemas) │             │
- │  │ connector │   └──────────────┬───────────────┘             │
- │  └───────────┘                  │                             │
- │                      consumer poll loop                       │
- │                          │                                    │
- │              ┌───────────┼───────────┐                        │
- │              ▼           ▼           ▼                        │
- │         Queue(p0)   Queue(p1)   Queue(p2)                     │
- │              │           │           │                        │
- │         Worker(p0)  Worker(p1)  Worker(p2)──▸ sinks           │
+ │  ┌─────────────┐   ┌──────────────────────────────┐           │
+ │  │ Provisioner │──▸│   EventSource (transport)    │           │
+ │  │ (topics +   │   │  ┌────────────────────────┐  │           │
+ │  │  connector) │   │  │ Kafka / Pub/Sub / PG   │  │           │
+ │  └─────────────┘   │  └────────────┬───────────┘  │           │
+ │                    └───────────────┼──────────────┘           │
+ │                         SourceEvent stream                    │
+ │                              │                                │
+ │              ┌───────────────┼───────────────┐                │
+ │              ▼               ▼               ▼                │
+ │         Queue(p0)       Queue(p1)       Queue(p2)             │
+ │              │               │               │                │
+ │         Worker(p0)      Worker(p1)      Worker(p2)──▸ sinks   │
  │                                                               │
- │         schema monitor     lag monitor     table maintenance  │
+ │    SourceMonitor (schema + lag)          table maintenance    │
+ │    ErrorRouter (DLQ)                                          │
  └───────────────────────────────────────────────────────────────┘
          ▲                                     │
     source DB                          sink destinations:
    (Postgres)                       Webhook, Postgres, Iceberg
 ```
 
-The source database and sink destinations are the only components outside the platform boundary. The platform provisions Kafka topics, deploys Debezium connectors, manages consumer groups and offsets, monitors schemas, and routes events to sinks.
+The source database and sink destinations are the only components outside the platform boundary. The platform provisions transport resources, deploys source connectors, manages consumer groups and offsets, monitors schemas, and routes events to sinks. The transport layer is abstracted behind protocols (`EventSource`, `Provisioner`, `ErrorRouter`, `SourceMonitor`), allowing the core pipeline to work with any event transport.
 
 ## Features
 
+- **Transport-agnostic architecture** — protocol-based abstractions (`EventSource`, `Provisioner`, `ErrorRouter`, `SourceMonitor`) decouple the pipeline from any specific event transport. Kafka is the default; new transports can be added without modifying the core pipeline.
 - **Multi-sink fan-out** — each CDC event is dispatched concurrently to all enabled sinks
 - **Backpressure** — bounded per-partition queues prevent unbounded memory growth when sinks are slow
 - **Parallel consumption** — per-partition async workers process independently within a single asyncio process
 - **Exactly-once delivery** — min-watermark offset commits ensure no data loss; idempotent upserts handle replay
 - **Schema evolution monitoring** — polls Schema Registry for version changes, optionally halts on incompatible changes
-- **Dead Letter Queue** — per-sink failures are routed to a DLQ topic with full diagnostic headers
-- **Avro serialization** — schema evolution managed by Confluent Schema Registry
+- **Dead Letter Queue** — per-sink failures are routed to an error destination with full diagnostic headers
+- **Avro serialization** — schema evolution managed by Confluent Schema Registry (Kafka transport)
 - **Retry with backoff** — configurable exponential backoff with jitter on all sink writes
 - **Defaults-based config** — built-in defaults with per-pipeline overrides, validated by Pydantic
 - **Lakehouse maintenance** — background compaction and snapshot expiry for Iceberg tables
@@ -172,9 +176,11 @@ Pipeline configs are validated strictly — including `kafka`, `connector`, or `
 
 ### Platform config (`platform.yaml`)
 
-Configures the platform's managed infrastructure: Kafka, Debezium Connect, Schema Registry, DLQ behavior, and pipeline tuning. All fields have sensible defaults, so this file is **optional for local development**.
+Configures the platform's managed infrastructure: transport mode, Kafka, Debezium Connect, Schema Registry, DLQ behavior, and pipeline tuning. All fields have sensible defaults, so this file is **optional for local development**.
 
 ```yaml
+transport_mode: kafka    # Event transport (currently: kafka)
+
 kafka:
   bootstrap_servers: kafka-prod:9092
   schema_registry_url: http://registry-prod:8081
@@ -220,7 +226,15 @@ The source database that CDC captures changes from. The platform connects to it 
 
 These configure the platform's managed infrastructure. They live in `platform.yaml` (not in pipeline configs). The defaults are production-ready for most deployments.
 
-**Kafka** (`kafka.*`) — The platform provisions topics, manages consumer groups, commits offsets, and monitors schemas through Kafka and the Schema Registry.
+**Transport** — Selects the event transport backend. The platform dispatches to transport-specific implementations via a factory based on this setting.
+
+| Field            | Default | Description                                         |
+|------------------|---------|-----------------------------------------------------|
+| `transport_mode` | `kafka` | Event transport backend (`kafka`). Future: `pubsub`, `embedded`. |
+
+When `transport_mode` is `kafka`, the `kafka` and `connector` sections are required (and provided by default). Future transport modes may require different configuration sections.
+
+**Kafka** (`kafka.*`) — Required when `transport_mode: kafka`. The platform provisions topics, manages consumer groups, commits offsets, and monitors schemas through Kafka and the Schema Registry.
 
 | Field                  | Default                       | Description                              |
 |------------------------|-------------------------------|------------------------------------------|
@@ -231,7 +245,7 @@ These configure the platform's managed infrastructure. They live in `platform.ya
 | `kafka.enable_idempotence`  | `true`                  | Idempotent producer for DLQ writes       |
 | `kafka.acks`                | `all`                   | Producer acknowledgment level            |
 
-**Debezium connector** (`connector.*`) — The platform deploys and manages the Debezium source connector via the Kafka Connect REST API.
+**Debezium connector** (`connector.*`) — Required when `transport_mode: kafka`. The platform deploys and manages the Debezium source connector via the Kafka Connect REST API.
 
 | Field                        | Default                       | Description                              |
 |------------------------------|-------------------------------|------------------------------------------|
@@ -297,13 +311,13 @@ All sinks share a retry config (configured in `platform.yaml` as a global defaul
 ## CLI
 
 ```
-cdc validate <pipeline.yaml>                              Validate pipeline config
+cdc validate <pipeline.yaml>                              Validate pipeline config (shows transport mode)
 cdc validate <pipeline.yaml> --platform-config prod.yaml  Validate with custom platform
-cdc deploy <pipeline.yaml>                                Register the Debezium connector
+cdc deploy <pipeline.yaml>                                Provision transport resources (topics + connector)
 cdc deploy <pipeline.yaml> --platform-config prod.yaml    Deploy with custom platform
-cdc health                                                Health with defaults
+cdc health                                                Health with defaults (transport-aware)
 cdc health --platform-config prod.yaml                    Health from platform config
-cdc consume <pipeline.yaml>                               Start a debug console consumer
+cdc consume <pipeline.yaml>                               Debug consumer via configured transport
 cdc consume <pipeline.yaml> --platform-config prod.yaml   Consume with custom platform
 cdc run <pipeline.yaml>                                   Run with default platform
 cdc run <pipeline.yaml> --platform-config prod.yaml       Run with custom platform
@@ -316,7 +330,16 @@ cdc lakehouse rollback <pipeline.yaml> --snapshot-id 123  Rollback to snapshot (
 
 ### Platform boundary
 
-The platform manages everything between the source database and the sink destinations. The config separation reinforces this boundary: the **platform config** governs everything inside the boundary (Kafka, Debezium, Schema Registry, DLQ, tuning), while the **pipeline config** governs the external connections (source database, sink destinations).
+The platform manages everything between the source database and the sink destinations. The config separation reinforces this boundary: the **platform config** governs everything inside the boundary (transport, DLQ, monitoring, tuning), while the **pipeline config** governs the external connections (source database, sink destinations).
+
+The core pipeline operates through four transport-agnostic protocols:
+
+- **`EventSource`** — Consumes events from the transport and delivers `SourceEvent` objects to the pipeline. Each event carries `key`, `value`, `topic`, `partition`, `offset`, and a `raw` reference to the original transport message.
+- **`Provisioner`** — Creates transport resources (topics, subscriptions, connectors) before the pipeline starts consuming.
+- **`ErrorRouter`** — Routes failed events to a dead-letter destination with diagnostic metadata.
+- **`SourceMonitor`** — Background monitoring for schema changes and consumer lag.
+
+A factory (`sources/factory.py`) dispatches on `transport_mode` to create the appropriate implementation. Currently, only the `kafka` transport is implemented:
 
 - **Kafka** — Topics are provisioned automatically from source table names. The platform owns the consumer group, offset lifecycle, and DLQ topics.
 - **Schema Registry** — Debezium publishes Avro schemas; the platform monitors them for version changes and compatibility.
@@ -327,15 +350,16 @@ The source database and sink destinations are the only things outside the platfo
 
 ### Pipeline lifecycle
 
-1. **Topic provisioning** — The platform auto-creates Kafka topics based on source tables and topic prefix (e.g. `cdc.public.customers`, `cdc.public.customers.dlq`)
-2. **Connector deployment** — A Debezium PostgreSQL connector is registered via the Kafka Connect REST API
-3. **Sink initialization** — All enabled sinks are started (connections opened, clients initialized)
-4. **Schema + lag monitors started** — Background tasks begin polling the Schema Registry and Kafka for version changes and consumer lag
-5. **Health server started** — HTTP health endpoints (`/healthz`, `/readyz`) become available for Kubernetes probes
-6. **Consume loop** — An async consumer polls Kafka in a background thread, deserializes Avro messages, and enqueues to per-partition bounded queues
-7. **Parallel dispatch** — Each partition has its own async worker that drains its queue and dispatches to all sinks concurrently
-8. **Offset management** — Offsets are committed at the min-watermark across all sinks (see below)
-9. **Graceful shutdown** — On SIGINT/SIGTERM, health server stops (readiness probe fails, traffic drains), monitors are stopped, partition workers are cancelled, all sinks are flushed and stopped, and a final offset commit is issued
+1. **Transport provisioning** — The `Provisioner` creates transport resources. For Kafka: auto-creates topics based on source tables and topic prefix (e.g. `cdc.public.customers`, `cdc.public.customers.dlq`) and registers a Debezium PostgreSQL connector via the Kafka Connect REST API.
+2. **Error router initialization** — The `ErrorRouter` (DLQ handler) is created for routing failed events.
+3. **Sink initialization** — All enabled sinks are started (connections opened, clients initialized).
+4. **Event source creation** — The `EventSource` is created for the configured transport mode.
+5. **Source monitor started** — The `SourceMonitor` begins background polling for schema changes and consumer lag.
+6. **Health server started** — HTTP health endpoints (`/healthz`, `/readyz`) become available for Kubernetes probes.
+7. **Consume loop** — The `EventSource` polls the transport, converts native messages to `SourceEvent` objects, and enqueues to per-partition bounded queues.
+8. **Parallel dispatch** — Each partition has its own async worker that drains its queue and dispatches to all sinks concurrently.
+9. **Offset management** — Offsets are committed at the min-watermark across all sinks via `EventSource.commit_offsets()`.
+10. **Graceful shutdown** — On SIGINT/SIGTERM, health server stops (readiness probe fails, traffic drains), source monitor is stopped, partition workers are cancelled, all sinks are flushed and stopped, and a final offset commit is issued.
 
 ### Exactly-once delivery
 
@@ -352,18 +376,18 @@ This means a slow sink (e.g. Iceberg with `batch_size=1000`) won't cause data lo
 The pipeline uses **bounded `asyncio.Queue`s** per partition to prevent unbounded memory growth.
 
 ```
-Consumer poll loop                    Per-partition workers
+EventSource poll loop                 Per-partition workers
      │                                     │
-     ├─ poll() ──▸ deserialize             │
+     ├─ poll() ──▸ SourceEvent             │
      │              │                      │
      │              ▼                      │
-     │         await queue.put(msg) ──▸ [Queue maxsize=N] ──▸ worker drains ──▸ sinks
+     │         await queue.put(event) ──▸ [Queue maxsize=N] ──▸ worker drains ──▸ sinks
      │              │                      │
      │         blocks if full              │
      │         (backpressure)              │
 ```
 
-**How it works:** When sinks are slow, queues fill up. `await queue.put()` blocks, which blocks the consumer's poll loop, which causes Kafka to stop fetching new messages. Once sinks catch up and workers drain the queue, the consumer resumes polling.
+**How it works:** When sinks are slow, queues fill up. `await queue.put()` blocks, which blocks the event source's poll loop, which causes the transport to stop fetching new messages. Once sinks catch up and workers drain the queue, the source resumes polling.
 
 The queue size per partition is set to `max_buffered_messages` (default: 1000). This is per-partition, not shared — each `(topic, partition)` pair gets its own queue with that maxsize.
 
@@ -374,17 +398,17 @@ The queue size per partition is set to `max_buffered_messages` (default: 1000). 
 
 ### Parallel Consumption
 
-The pipeline runs as a **single-process asyncio** application. Each assigned Kafka partition gets its own async worker task:
+The pipeline runs as a **single-process asyncio** application. Each assigned partition gets its own async worker task:
 
 ```
-                              ┌─ Queue(p0) ──▸ Worker(p0) ──▸ dispatch ──▸ sinks
-Consumer poll ──▸ enqueue ──▸ ├─ Queue(p1) ──▸ Worker(p1) ──▸ dispatch ──▸ sinks
-                              └─ Queue(p2) ──▸ Worker(p2) ──▸ dispatch ──▸ sinks
+                                  ┌─ Queue(p0) ──▸ Worker(p0) ──▸ dispatch ──▸ sinks
+EventSource poll ──▸ enqueue ──▸  ├─ Queue(p1) ──▸ Worker(p1) ──▸ dispatch ──▸ sinks
+                                  └─ Queue(p2) ──▸ Worker(p2) ──▸ dispatch ──▸ sinks
 ```
 
-The consumer poll loop only enqueues messages to the correct partition's queue; dispatch happens in parallel per partition. A slow Iceberg flush on partition 0 does not block partition 1.
+The event source poll loop only enqueues `SourceEvent` objects to the correct partition's queue; dispatch happens in parallel per partition. A slow Iceberg flush on partition 0 does not block partition 1.
 
-**Rebalance handling:** When Kafka triggers a rebalance (new consumer joins, existing one leaves), the pipeline uses `on_assign`/`on_revoke` callbacks:
+**Rebalance handling:** When the transport triggers a rebalance (new consumer joins, existing one leaves), the pipeline uses `on_assign`/`on_revoke` callbacks passed to `EventSource.start()`:
 
 - **`on_assign`** — Creates a new bounded queue + async worker task for each newly assigned partition.
 - **`on_revoke`** — Cancels the worker task and discards the queue for each revoked partition. Queued but uncommitted messages are safe to discard because their offsets were never committed — the new partition owner will re-consume them from the last committed offset.
@@ -466,7 +490,7 @@ Lag data is also included in the health endpoint response under the `consumer_la
 
 ### Dead Letter Queue
 
-When a sink write fails (after retries), the event is routed to a DLQ topic (`{source_topic}.dlq`) with diagnostic headers:
+When a sink write fails (after retries), the `ErrorRouter` routes the event to a dead-letter destination. For the Kafka transport, this is a DLQ topic (`{source_topic}.dlq`) with diagnostic headers:
 
 - `dlq.source_topic`, `dlq.source_partition`, `dlq.source_offset`
 - `dlq.error_type`, `dlq.error_message`, `dlq.stacktrace`
@@ -487,20 +511,29 @@ Other sinks are not affected by one sink's failure.
 src/cdc_platform/
 ├── cli.py                          # Typer CLI (validate, deploy, health, consume, run)
 ├── config/
-│   ├── models.py                   # Pydantic configuration models
+│   ├── models.py                   # Pydantic configuration models (incl. TransportMode)
 │   ├── loader.py                   # YAML + env var config loader
 │   ├── defaults.py                 # Default config loading and merging
 │   └── defaults/
 │       ├── platform.yaml           # Default platform infrastructure config
 │       └── pipeline.yaml           # Default pipeline config (source defaults)
 ├── sources/
-│   └── debezium/
-│       ├── client.py               # Async Kafka Connect REST client
-│       └── config.py               # Debezium connector config builder
+│   ├── base.py                     # SourceEvent dataclass + EventSource protocol
+│   ├── provisioner.py              # Provisioner protocol
+│   ├── error_router.py             # ErrorRouter protocol
+│   ├── monitor.py                  # SourceMonitor protocol
+│   ├── factory.py                  # Factory functions (transport_mode → implementations)
+│   ├── debezium/
+│   │   ├── client.py               # Async Kafka Connect REST client
+│   │   └── config.py               # Debezium connector config builder
+│   └── kafka/
+│       ├── source.py               # KafkaEventSource (wraps CDCConsumer)
+│       ├── provisioner.py          # KafkaProvisioner (topics + Debezium registration)
+│       └── monitor.py              # KafkaSourceMonitor (SchemaMonitor + LagMonitor)
 ├── streaming/
 │   ├── consumer.py                 # Avro-deserializing Kafka consumer
 │   ├── producer.py                 # Idempotent Kafka producer
-│   ├── dlq.py                      # Dead Letter Queue handler
+│   ├── dlq.py                      # Dead Letter Queue handler (satisfies ErrorRouter)
 │   ├── topics.py                   # Topic naming and admin utilities
 │   ├── registry.py                 # Schema Registry integration
 │   └── schema_monitor.py           # Schema Registry version change monitor
@@ -514,9 +547,9 @@ src/cdc_platform/
 │   ├── postgres.py                 # PostgreSQL batched sink
 │   └── iceberg.py                  # Apache Iceberg lakehouse sink
 ├── pipeline/
-│   └── runner.py                   # Pipeline orchestrator (partition queues, backpressure, monitors)
+│   └── runner.py                   # Pipeline orchestrator (transport-agnostic, uses protocols)
 └── observability/
-    ├── health.py                   # Component health probes
+    ├── health.py                   # Component health probes (transport-aware)
     ├── http_health.py              # Async HTTP health server for K8s probes (/healthz, /readyz)
     └── metrics.py                  # Consumer lag metrics + LagMonitor periodic reporter
 
@@ -602,6 +635,37 @@ The Connect service uses a custom Docker image (`docker/connect/Dockerfile`) tha
 3. Track `_flushed_offsets` — update after durable writes, not on buffering
 4. Register the sink type in `sinks/factory.py`
 5. Add the corresponding config model to `config/models.py`
+
+### Adding a new transport
+
+The platform's transport abstraction makes it possible to add new event sources (e.g. Pub/Sub, embedded PG WAL reader) without modifying the core pipeline. Four protocols must be implemented:
+
+1. **Add a `TransportMode` variant** — Add the new mode to the `TransportMode` enum in `config/models.py` (e.g. `PUBSUB = "pubsub"`). Add any transport-specific config models and update the `PlatformConfig` model validator to enforce requirements for the new mode.
+
+2. **Implement `EventSource`** (`sources/base.py`) — Create `sources/<transport>/source.py`. The `start()` method receives a handler callback and must call `await handler(event)` for each `SourceEvent`. Implement `commit_offsets()`, `stop()`, and `health()`. For non-partitioned transports, use `partition=0`.
+
+3. **Implement `Provisioner`** (`sources/provisioner.py`) — Create `sources/<transport>/provisioner.py`. The `provision()` method creates any resources the transport needs (subscriptions, topics, connectors). The `teardown()` method removes them.
+
+4. **Implement `ErrorRouter`** (`sources/error_router.py`) — If the transport has its own dead-letter mechanism, create an implementation. Otherwise, the existing `DLQHandler` can be reused if the transport writes to Kafka, or return `None` from the factory to disable error routing.
+
+5. **Implement `SourceMonitor`** (`sources/monitor.py`) — Create `sources/<transport>/monitor.py` if the transport supports schema monitoring or lag tracking. Return `None` from the factory if not applicable.
+
+6. **Register in the factory** — Add dispatch branches for the new `TransportMode` in each function in `sources/factory.py`.
+
+7. **Add tests** — Protocol conformance tests (`isinstance` checks), unit tests for each implementation, and factory dispatch tests.
+
+The core pipeline (`pipeline/runner.py`), sinks, CLI, and all existing tests remain unchanged — they only interact with the protocols. The `SourceEvent` dataclass is the universal contract between transport and pipeline:
+
+```python
+@dataclass
+class SourceEvent:
+    key: dict[str, Any] | None
+    value: dict[str, Any] | None
+    topic: str       # logical channel name
+    partition: int   # shard (0 for non-partitioned transports)
+    offset: int      # position (transport-specific)
+    raw: Any = None  # original transport message for ack/commit/DLQ
+```
 
 ## License
 

@@ -8,7 +8,6 @@ from typing import Any
 
 import structlog
 import typer
-from confluent_kafka import Message
 from rich.console import Console
 from rich.table import Table
 
@@ -18,8 +17,7 @@ from cdc_platform.observability.health import (
     Status,
     check_platform_health,
 )
-from cdc_platform.sources.debezium.client import DebeziumClient
-from cdc_platform.streaming.consumer import CDCConsumer
+from cdc_platform.sources.base import SourceEvent
 
 logger = structlog.get_logger()
 console = Console()
@@ -56,7 +54,9 @@ def validate(
             f"  source: {pipeline.source.source_type} → {pipeline.source.database}"
         )
         console.print(f"  tables: {pipeline.source.tables}")
-        console.print(f"  kafka:  {platform.kafka.bootstrap_servers}")
+        console.print(f"  transport: {platform.transport_mode}")
+        if platform.kafka:
+            console.print(f"  kafka:  {platform.kafka.bootstrap_servers}")
         platform_source = platform_config or "(defaults)"
         console.print(f"  platform config: {platform_source}")
         if pipeline.sinks:
@@ -78,16 +78,18 @@ def deploy(
         None, "--platform-config", help="Platform YAML"
     ),
 ) -> None:
-    """Validate config and register the Debezium connector."""
+    """Validate config and provision transport resources."""
     pipeline, platform = _load(config_path, platform_config)
 
+    from cdc_platform.sources.factory import create_provisioner
+
     async def _deploy() -> None:
-        async with DebeziumClient(platform.connector) as client:
-            await client.wait_until_ready()
-            result = await client.register_connector(pipeline, platform)
-            console.print(
-                f"[green]Connector registered:[/green] {result.get('name', 'unknown')}"
-            )
+        provisioner = create_provisioner(platform)
+        result = await provisioner.provision(pipeline)
+        connector = result.get("connector", {})
+        console.print(
+            f"[green]Provisioned:[/green] {connector.get('name', platform.transport_mode)}"
+        )
 
     asyncio.run(_deploy())
 
@@ -126,31 +128,21 @@ def consume(
     """Start a debug console consumer for CDC events."""
     pipeline, platform = _load(config_path, platform_config)
 
-    from cdc_platform.streaming.topics import topics_for_pipeline
+    from cdc_platform.sources.factory import create_event_source
 
-    cdc_topics = [
-        t for t in topics_for_pipeline(pipeline, platform) if not t.endswith(".dlq")
-    ]
-
-    async def handler(
-        key: dict[str, Any] | None, value: dict[str, Any] | None, msg: Message
-    ) -> None:
+    async def handler(event: SourceEvent) -> None:
         console.print(
-            f"[cyan]{msg.topic()}[/cyan] p={msg.partition()} o={msg.offset()}"
+            f"[cyan]{event.topic}[/cyan] p={event.partition} o={event.offset}"
         )
-        if key:
-            console.print(f"  key:   {key}")
-        if value:
-            console.print(f"  value: {value}")
+        if event.key:
+            console.print(f"  key:   {event.key}")
+        if event.value:
+            console.print(f"  value: {event.value}")
         console.print()
 
-    console.print(f"[yellow]Consuming from:[/yellow] {cdc_topics}")
-    consumer = CDCConsumer(
-        topics=cdc_topics,
-        kafka_config=platform.kafka,
-        handler=handler,
-    )
-    asyncio.run(consumer.consume())
+    source = create_event_source(pipeline, platform)
+    console.print(f"[yellow]Consuming ({platform.transport_mode})[/yellow]")
+    asyncio.run(source.start(handler=handler))
 
 
 @app.command()
@@ -160,7 +152,7 @@ def run(
         None, "--platform-config", help="Platform YAML"
     ),
 ) -> None:
-    """Run the full CDC pipeline (source → Kafka → sinks)."""
+    """Run the full CDC pipeline (source → transport → sinks)."""
     pipeline, platform = _load(config_path, platform_config)
 
     from cdc_platform.pipeline.runner import Pipeline

@@ -15,6 +15,7 @@ from cdc_platform.config.models import (
     WebhookSinkConfig,
 )
 from cdc_platform.pipeline.runner import Pipeline
+from cdc_platform.sources.base import SourceEvent
 
 
 def _make_pipeline(*sink_cfgs: SinkConfig) -> PipelineConfig:
@@ -38,18 +39,22 @@ def _webhook_sink_config(sink_id: str = "wh1", enabled: bool = True) -> SinkConf
     )
 
 
-def _mock_message(
+def _make_event(
     topic: str = "cdc.public.customers",
     partition: int = 0,
     offset: int = 1,
-) -> MagicMock:
-    msg = MagicMock()
-    msg.topic.return_value = topic
-    msg.partition.return_value = partition
-    msg.offset.return_value = offset
-    msg.key.return_value = b"key"
-    msg.value.return_value = b"value"
-    return msg
+) -> SourceEvent:
+    raw = MagicMock()
+    raw.key.return_value = b"key"
+    raw.value.return_value = b"value"
+    return SourceEvent(
+        key={"id": 1},
+        value={"name": "Alice"},
+        topic=topic,
+        partition=partition,
+        offset=offset,
+        raw=raw,
+    )
 
 
 @pytest.mark.asyncio
@@ -68,8 +73,8 @@ class TestPipelineDispatch:
         type(sink2).flushed_offsets = PropertyMock(return_value={})
         pipeline._sinks = [sink1, sink2]
 
-        msg = _mock_message()
-        await pipeline._dispatch_to_sinks({"id": 1}, {"name": "Alice"}, msg)
+        event = _make_event()
+        await pipeline._dispatch_to_sinks(event)
 
         sink1.write.assert_awaited_once_with(
             {"id": 1}, {"name": "Alice"}, "cdc.public.customers", 0, 1
@@ -78,7 +83,7 @@ class TestPipelineDispatch:
             {"id": 1}, {"name": "Alice"}, "cdc.public.customers", 0, 1
         )
 
-    async def test_sink_failure_routes_to_dlq(self):
+    async def test_sink_failure_routes_to_error_router(self):
         config = _make_pipeline(_webhook_sink_config("wh1"))
         pipeline = Pipeline(config, _make_platform())
 
@@ -88,15 +93,15 @@ class TestPipelineDispatch:
         type(failing_sink).flushed_offsets = PropertyMock(return_value={})
         pipeline._sinks = [failing_sink]
 
-        mock_dlq = MagicMock()
-        pipeline._dlq = mock_dlq
+        mock_error_router = MagicMock()
+        pipeline._error_router = mock_error_router
 
-        msg = _mock_message()
-        # Should not raise — failure is caught and routed to DLQ
-        await pipeline._dispatch_to_sinks({"id": 1}, None, msg)
+        event = _make_event()
+        # Should not raise — failure is caught and routed to error router
+        await pipeline._dispatch_to_sinks(event)
 
-        mock_dlq.send.assert_called_once()
-        call_kwargs = mock_dlq.send.call_args.kwargs
+        mock_error_router.send.assert_called_once()
+        call_kwargs = mock_error_router.send.call_args.kwargs
         assert call_kwargs["source_topic"] == "cdc.public.customers"
         assert call_kwargs["extra_headers"] == {"dlq.sink_id": "wh1"}
 
@@ -116,10 +121,10 @@ class TestPipelineDispatch:
         type(ok_sink).flushed_offsets = PropertyMock(return_value={})
 
         pipeline._sinks = [failing_sink, ok_sink]
-        pipeline._dlq = MagicMock()
+        pipeline._error_router = MagicMock()
 
-        msg = _mock_message()
-        await pipeline._dispatch_to_sinks(None, None, msg)
+        event = _make_event()
+        await pipeline._dispatch_to_sinks(event)
 
         ok_sink.write.assert_awaited_once()
 
@@ -153,7 +158,7 @@ class TestPipelineDisabledSinks:
 @pytest.mark.asyncio
 class TestDispatchAsHandler:
     async def test_dispatch_can_be_used_as_async_handler(self):
-        """_dispatch_to_sinks is passed directly as async_handler to consumer."""
+        """_dispatch_to_sinks is passed directly as async_handler to source."""
         config = _make_pipeline(_webhook_sink_config("wh1"))
         pipeline = Pipeline(config, _make_platform())
 
@@ -162,8 +167,8 @@ class TestDispatchAsHandler:
         type(sink).flushed_offsets = PropertyMock(return_value={})
         pipeline._sinks = [sink]
 
-        msg = _mock_message()
-        await pipeline._dispatch_to_sinks({"id": 1}, {"v": 1}, msg)
+        event = _make_event()
+        await pipeline._dispatch_to_sinks(event)
 
         sink.write.assert_awaited_once()
 
@@ -184,22 +189,22 @@ class TestWatermarkCommit:
         config = _make_pipeline(_webhook_sink_config("wh1"))
         pipeline = Pipeline(config, _make_platform())
 
-        mock_consumer = MagicMock()
-        pipeline._consumer = mock_consumer
+        mock_source = MagicMock()
+        pipeline._source = mock_source
 
         sink = _mock_sink("wh1", {("t", 0): 10})
         pipeline._sinks = [sink]
 
         pipeline._maybe_commit_watermark()
 
-        mock_consumer.commit_offsets.assert_called_once_with({("t", 0): 10})
+        mock_source.commit_offsets.assert_called_once_with({("t", 0): 10})
 
     async def test_watermark_not_committed_twice(self):
         config = _make_pipeline(_webhook_sink_config("wh1"))
         pipeline = Pipeline(config, _make_platform())
 
-        mock_consumer = MagicMock()
-        pipeline._consumer = mock_consumer
+        mock_source = MagicMock()
+        pipeline._source = mock_source
 
         sink = _mock_sink("wh1", {("t", 0): 10})
         pipeline._sinks = [sink]
@@ -207,7 +212,7 @@ class TestWatermarkCommit:
         pipeline._maybe_commit_watermark()
         pipeline._maybe_commit_watermark()
 
-        assert mock_consumer.commit_offsets.call_count == 1
+        assert mock_source.commit_offsets.call_count == 1
 
     async def test_min_watermark_across_sinks(self):
         config = _make_pipeline(
@@ -216,8 +221,8 @@ class TestWatermarkCommit:
         )
         pipeline = Pipeline(config, _make_platform())
 
-        mock_consumer = MagicMock()
-        pipeline._consumer = mock_consumer
+        mock_source = MagicMock()
+        pipeline._source = mock_source
 
         sink1 = _mock_sink("wh1", {("t", 0): 10})
         sink2 = _mock_sink("wh2", {("t", 0): 4})
@@ -225,7 +230,7 @@ class TestWatermarkCommit:
 
         pipeline._maybe_commit_watermark()
 
-        mock_consumer.commit_offsets.assert_called_once_with({("t", 0): 4})
+        mock_source.commit_offsets.assert_called_once_with({("t", 0): 4})
 
     async def test_partition_suppressed_when_sink_not_flushed(self):
         config = _make_pipeline(
@@ -234,8 +239,8 @@ class TestWatermarkCommit:
         )
         pipeline = Pipeline(config, _make_platform())
 
-        mock_consumer = MagicMock()
-        pipeline._consumer = mock_consumer
+        mock_source = MagicMock()
+        pipeline._source = mock_source
 
         sink1 = _mock_sink("wh1", {("t", 0): 10})
         sink2 = _mock_sink("wh2", {})  # hasn't flushed partition 0 yet
@@ -243,57 +248,55 @@ class TestWatermarkCommit:
 
         pipeline._maybe_commit_watermark()
 
-        mock_consumer.commit_offsets.assert_not_called()
+        mock_source.commit_offsets.assert_not_called()
 
     async def test_multiple_partitions_committed_independently(self):
         config = _make_pipeline(_webhook_sink_config("wh1"))
         pipeline = Pipeline(config, _make_platform())
 
-        mock_consumer = MagicMock()
-        pipeline._consumer = mock_consumer
+        mock_source = MagicMock()
+        pipeline._source = mock_source
 
         sink = _mock_sink("wh1", {("t", 0): 5, ("t", 1): 12})
         pipeline._sinks = [sink]
 
         pipeline._maybe_commit_watermark()
 
-        mock_consumer.commit_offsets.assert_called_once_with(
-            {("t", 0): 5, ("t", 1): 12}
-        )
+        mock_source.commit_offsets.assert_called_once_with({("t", 0): 5, ("t", 1): 12})
 
     async def test_stop_sinks_commits_final_watermark(self):
         config = _make_pipeline(_webhook_sink_config("wh1"))
         pipeline = Pipeline(config, _make_platform())
 
-        mock_consumer = MagicMock()
-        pipeline._consumer = mock_consumer
+        mock_source = MagicMock()
+        pipeline._source = mock_source
 
         sink = _mock_sink("wh1", {("t", 0): 99})
         pipeline._sinks = [sink]
 
         await pipeline._stop_sinks()
 
-        mock_consumer.commit_offsets.assert_called_once_with({("t", 0): 99})
+        mock_source.commit_offsets.assert_called_once_with({("t", 0): 99})
 
-    async def test_no_commit_when_consumer_is_none(self):
+    async def test_no_commit_when_source_is_none(self):
         config = _make_pipeline(_webhook_sink_config("wh1"))
         pipeline = Pipeline(config, _make_platform())
-        pipeline._consumer = None
+        pipeline._source = None
 
         sink = _mock_sink("wh1", {("t", 0): 10})
         pipeline._sinks = [sink]
 
         pipeline._maybe_commit_watermark()
-        # No consumer, so no commit — no assertion needed, just no error
+        # No source, so no commit — no assertion needed, just no error
 
     async def test_no_commit_when_no_sinks(self):
         config = _make_pipeline()
         pipeline = Pipeline(config, _make_platform())
 
-        mock_consumer = MagicMock()
-        pipeline._consumer = mock_consumer
+        mock_source = MagicMock()
+        pipeline._source = mock_source
         pipeline._sinks = []
 
         pipeline._maybe_commit_watermark()
 
-        mock_consumer.commit_offsets.assert_not_called()
+        mock_source.commit_offsets.assert_not_called()

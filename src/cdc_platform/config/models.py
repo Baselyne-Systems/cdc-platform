@@ -9,6 +9,12 @@ from typing import Annotated, Literal, Self
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
 
+class TransportMode(StrEnum):
+    """Supported event transport modes."""
+
+    KAFKA = "kafka"
+
+
 class SourceType(StrEnum):
     """Supported CDC source types."""
 
@@ -206,8 +212,9 @@ class PipelineConfig(BaseModel, extra="forbid"):
 class PlatformConfig(BaseModel):
     """Platform infrastructure configuration — Kafka, Debezium, DLQ, tuning."""
 
-    kafka: KafkaConfig = KafkaConfig()
-    connector: ConnectorConfig = ConnectorConfig()
+    transport_mode: TransportMode = TransportMode.KAFKA
+    kafka: KafkaConfig | None = KafkaConfig()
+    connector: ConnectorConfig | None = ConnectorConfig()
     dlq: DLQConfig = DLQConfig()
     retry: RetryConfig = RetryConfig()
     max_buffered_messages: int = 1000
@@ -217,3 +224,15 @@ class PlatformConfig(BaseModel):
     stop_on_incompatible_schema: bool = False
     health_port: int = 8080
     health_enabled: bool = True
+
+    @model_validator(mode="after")
+    def check_transport_requirements(self) -> Self:
+        """Ensure transport-specific config is present."""
+        if self.transport_mode == TransportMode.KAFKA:
+            if self.kafka is None:
+                msg = "kafka config is required when transport_mode is 'kafka'"
+                raise ValueError(msg)
+            if self.connector is None:
+                msg = "connector config is required when transport_mode is 'kafka'"
+                raise ValueError(msg)
+        return self

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, PropertyMock
+from unittest.mock import AsyncMock, PropertyMock
 
 import pytest
 
@@ -16,6 +16,7 @@ from cdc_platform.config.models import (
     WebhookSinkConfig,
 )
 from cdc_platform.pipeline.runner import Pipeline
+from cdc_platform.sources.base import SourceEvent
 
 
 def _make_pipeline() -> PipelineConfig:
@@ -36,16 +37,16 @@ def _make_platform(max_buffered: int = 5) -> PlatformConfig:
     return PlatformConfig(max_buffered_messages=max_buffered)
 
 
-def _mock_message(
+def _make_event(
     topic: str = "cdc.public.t", partition: int = 0, offset: int = 0
-) -> MagicMock:
-    msg = MagicMock()
-    msg.topic.return_value = topic
-    msg.partition.return_value = partition
-    msg.offset.return_value = offset
-    msg.key.return_value = b"k"
-    msg.value.return_value = b"v"
-    return msg
+) -> SourceEvent:
+    return SourceEvent(
+        key={"k": offset},
+        value={"v": offset},
+        topic=topic,
+        partition=partition,
+        offset=offset,
+    )
 
 
 def _slow_sink(sink_id: str = "wh1", delay: float = 0.1) -> AsyncMock:
@@ -72,17 +73,14 @@ class TestBackpressure:
         pipeline._sinks = [_slow_sink(delay=10)]  # very slow sink
 
         # First enqueue: worker pulls it immediately into slow write
-        msg1 = _mock_message(offset=0)
-        await pipeline._enqueue({"k": 1}, {"v": 1}, msg1)
+        await pipeline._enqueue(_make_event(offset=0))
         await asyncio.sleep(0.01)  # let worker pick it up
 
         # Second enqueue: fills the queue (maxsize=1)
-        msg2 = _mock_message(offset=1)
-        await pipeline._enqueue({"k": 2}, {"v": 2}, msg2)
+        await pipeline._enqueue(_make_event(offset=1))
 
         # Third enqueue should block (queue full, worker busy with sink)
-        msg3 = _mock_message(offset=2)
-        enqueue_task = asyncio.create_task(pipeline._enqueue({"k": 3}, {"v": 3}, msg3))
+        enqueue_task = asyncio.create_task(pipeline._enqueue(_make_event(offset=2)))
         await asyncio.sleep(0.05)
         assert not enqueue_task.done(), "enqueue should block when queue is full"
 
@@ -107,8 +105,7 @@ class TestBackpressure:
         pipeline._sinks = [sink]
 
         for i in range(5):
-            msg = _mock_message(offset=i)
-            await pipeline._enqueue({"k": i}, {"v": i}, msg)
+            await pipeline._enqueue(_make_event(offset=i))
 
         # Let workers drain
         for q in pipeline._partition_queues.values():
@@ -124,8 +121,7 @@ class TestBackpressure:
         pipeline = Pipeline(_make_pipeline(), _make_platform(max_buffered=42))
         pipeline._sinks = [_slow_sink(delay=10)]
 
-        msg = _mock_message()
-        await pipeline._enqueue(None, None, msg)
+        await pipeline._enqueue(_make_event())
 
         tp = ("cdc.public.t", 0)
         assert pipeline._partition_queues[tp].maxsize == 42
@@ -150,8 +146,7 @@ class TestBackpressure:
         pipeline._sinks = [sink]
 
         for i in range(10):
-            msg = _mock_message(offset=i)
-            await pipeline._enqueue({"k": i}, {"v": i}, msg)
+            await pipeline._enqueue(_make_event(offset=i))
 
         for q in pipeline._partition_queues.values():
             await asyncio.wait_for(q.join(), timeout=5.0)

@@ -7,28 +7,29 @@ from contextlib import suppress
 from typing import Any
 
 import structlog
-from confluent_kafka import Message
 
 from cdc_platform.config.models import PipelineConfig, PlatformConfig
 from cdc_platform.observability.http_health import HealthServer
-from cdc_platform.observability.metrics import LagMonitor
 from cdc_platform.sinks.base import SinkConnector
 from cdc_platform.sinks.factory import create_sink
-from cdc_platform.sources.debezium.client import DebeziumClient
-from cdc_platform.streaming.consumer import CDCConsumer
-from cdc_platform.streaming.dlq import DLQHandler
-from cdc_platform.streaming.producer import create_producer
-from cdc_platform.streaming.schema_monitor import SchemaMonitor
-from cdc_platform.streaming.topics import ensure_topics, topics_for_pipeline
+from cdc_platform.sources.base import EventSource, SourceEvent
+from cdc_platform.sources.error_router import ErrorRouter
+from cdc_platform.sources.factory import (
+    create_error_router,
+    create_event_source,
+    create_provisioner,
+    create_source_monitor,
+)
+from cdc_platform.sources.monitor import SourceMonitor
 
 logger = structlog.get_logger()
 
 
 class Pipeline:
-    """Orchestrates the full CDC pipeline: source → Kafka → sink(s).
+    """Orchestrates the full CDC pipeline: source → transport → sink(s).
 
     Fan-out: each event is dispatched to all enabled sinks concurrently.
-    Per-sink failures are routed to the DLQ independently.
+    Per-sink failures are routed to the error router independently.
     Per-partition bounded queues provide backpressure and parallel consumption.
     """
 
@@ -36,15 +37,12 @@ class Pipeline:
         self._pipeline = pipeline
         self._platform = platform
         self._sinks: list[SinkConnector] = []
-        self._consumer: CDCConsumer | None = None
-        self._dlq: DLQHandler | None = None
+        self._source: EventSource | None = None
+        self._error_router: ErrorRouter | None = None
         self._last_committed: dict[tuple[str, int], int] = {}
-        self._partition_queues: dict[
-            tuple[str, int], asyncio.Queue[tuple[Any, Any, Message]]
-        ] = {}
+        self._partition_queues: dict[tuple[str, int], asyncio.Queue[SourceEvent]] = {}
         self._partition_workers: dict[tuple[str, int], asyncio.Task[None]] = {}
-        self._schema_monitor: SchemaMonitor | None = None
-        self._lag_monitor: LagMonitor | None = None
+        self._monitor: SourceMonitor | None = None
         self._health_server: HealthServer | None = None
 
     def start(self) -> None:
@@ -52,24 +50,14 @@ class Pipeline:
         asyncio.run(self._start_async())
 
     async def _start_async(self) -> None:
-        # 1. Ensure topics exist
-        all_topics = topics_for_pipeline(self._pipeline, self._platform)
-        ensure_topics(self._platform.kafka.bootstrap_servers, all_topics)
+        # 1. Provision transport resources (topics + connector)
+        provisioner = create_provisioner(self._platform)
+        await provisioner.provision(self._pipeline)
 
-        # 2. Deploy Debezium connector
-        async with DebeziumClient(self._platform.connector) as client:
-            await client.wait_until_ready()
-            await client.register_connector(self._pipeline, self._platform)
-            logger.info(
-                "pipeline.connector_deployed", pipeline_id=self._pipeline.pipeline_id
-            )
+        # 2. Init error router (DLQ)
+        self._error_router = create_error_router(self._platform)
 
-        # 3. Init DLQ handler
-        if self._platform.dlq.enabled:
-            producer = create_producer(self._platform.kafka)
-            self._dlq = DLQHandler(producer, self._platform.dlq)
-
-        # 4. Start enabled sinks
+        # 3. Start enabled sinks
         for sink_cfg in self._pipeline.sinks:
             if not sink_cfg.enabled:
                 logger.info("pipeline.sink_disabled", sink_id=sink_cfg.sink_id)
@@ -79,37 +67,17 @@ class Pipeline:
             self._sinks.append(sink)
             logger.info("pipeline.sink_started", sink_id=sink.sink_id)
 
-        # 5. Build consumer with async enqueue handler + rebalance callbacks
-        cdc_topics = [t for t in all_topics if not t.endswith(".dlq")]
-        self._consumer = CDCConsumer(
-            topics=cdc_topics,
-            kafka_config=self._platform.kafka,
-            handler=self._enqueue,
-            dlq_config=self._platform.dlq,
-            on_assign=self._on_partitions_assigned,
-            on_revoke=self._on_partitions_revoked,
-        )
+        # 4. Build event source
+        self._source = create_event_source(self._pipeline, self._platform)
 
-        # 6. Start schema monitor
-        self._schema_monitor = SchemaMonitor(
-            registry_url=self._platform.kafka.schema_registry_url,
-            topics=cdc_topics,
-            interval=self._platform.schema_monitor_interval_seconds,
-            stop_on_incompatible=self._platform.stop_on_incompatible_schema,
-            on_incompatible=self.stop,
+        # 5. Start source monitor (schema + lag)
+        self._monitor = create_source_monitor(
+            self._pipeline, self._platform, on_incompatible=self.stop
         )
-        await self._schema_monitor.start()
+        if self._monitor is not None:
+            await self._monitor.start()
 
-        # 7. Start lag monitor
-        self._lag_monitor = LagMonitor(
-            bootstrap_servers=self._platform.kafka.bootstrap_servers,
-            group_id=self._platform.kafka.group_id,
-            topics=cdc_topics,
-            interval=self._platform.lag_monitor_interval_seconds,
-        )
-        await self._lag_monitor.start()
-
-        # 8. Start health server
+        # 6. Start health server
         if self._platform.health_enabled:
             self._health_server = HealthServer(
                 port=self._platform.health_port,
@@ -121,27 +89,21 @@ class Pipeline:
             "pipeline.started",
             pipeline_id=self._pipeline.pipeline_id,
             sinks=[s.sink_id for s in self._sinks],
-            topics=cdc_topics,
         )
 
-        # 9. Consume (async) — polls in a thread, enqueues to partition queues
+        # 7. Consume — polls transport, enqueues to partition queues
         try:
-            await self._consumer.consume()
+            await self._source.start(
+                handler=self._enqueue,
+                on_assign=self._on_partitions_assigned,
+                on_revoke=self._on_partitions_revoked,
+            )
         finally:
             await self._shutdown()
 
-    async def _enqueue(
-        self,
-        key: dict[str, Any] | None,
-        value: dict[str, Any] | None,
-        msg: Message,
-    ) -> None:
-        """Enqueue message to the partition's bounded queue (backpressure)."""
-        topic = msg.topic()
-        partition = msg.partition()
-        assert topic is not None
-        assert partition is not None
-        tp = (topic, partition)
+    async def _enqueue(self, event: SourceEvent) -> None:
+        """Enqueue event to the partition's bounded queue (backpressure)."""
+        tp = (event.topic, event.partition)
         queue = self._partition_queues.get(tp)
         if queue is None:
             queue = asyncio.Queue(maxsize=self._platform.max_buffered_messages)
@@ -149,23 +111,23 @@ class Pipeline:
             self._partition_workers[tp] = asyncio.create_task(
                 self._partition_loop(tp, queue)
             )
-        await queue.put((key, value, msg))
+        await queue.put(event)
 
     async def _partition_loop(
-        self, tp: tuple[str, int], queue: asyncio.Queue[tuple[Any, Any, Message]]
+        self, tp: tuple[str, int], queue: asyncio.Queue[SourceEvent]
     ) -> None:
         """Per-partition worker — drains queue and dispatches to sinks."""
         while True:
-            key, value, msg = await queue.get()
+            event = await queue.get()
             try:
-                await self._dispatch_to_sinks(key, value, msg)
+                await self._dispatch_to_sinks(event)
             finally:
                 queue.task_done()
 
     def _on_partitions_assigned(self, partitions: list[tuple[str, int]]) -> None:
         for tp in partitions:
             if tp not in self._partition_queues:
-                queue: asyncio.Queue[tuple[Any, Any, Message]] = asyncio.Queue(
+                queue: asyncio.Queue[SourceEvent] = asyncio.Queue(
                     maxsize=self._platform.max_buffered_messages
                 )
                 self._partition_queues[tp] = queue
@@ -182,39 +144,34 @@ class Pipeline:
             self._partition_queues.pop(tp, None)
         logger.info("pipeline.partitions_revoked", partitions=partitions)
 
-    async def _dispatch_to_sinks(
-        self,
-        key: dict[str, Any] | None,
-        value: dict[str, Any] | None,
-        msg: Message,
-    ) -> None:
-        """Fan-out to all sinks concurrently; per-sink failures → DLQ."""
-        topic = msg.topic()
-        partition = msg.partition()
-        offset = msg.offset()
-        assert topic is not None
-        assert partition is not None
-        assert offset is not None
+    async def _dispatch_to_sinks(self, event: SourceEvent) -> None:
+        """Fan-out to all sinks concurrently; per-sink failures → error router."""
 
         async def _write_to_sink(sink: SinkConnector) -> None:
             try:
-                await sink.write(key, value, topic, partition, offset)
+                await sink.write(
+                    event.key,
+                    event.value,
+                    event.topic,
+                    event.partition,
+                    event.offset,
+                )
             except Exception as exc:
                 logger.error(
                     "pipeline.sink_write_error",
                     sink_id=sink.sink_id,
-                    topic=topic,
-                    partition=partition,
-                    offset=offset,
+                    topic=event.topic,
+                    partition=event.partition,
+                    offset=event.offset,
                     error=str(exc),
                 )
-                if self._dlq:
-                    self._dlq.send(
-                        source_topic=topic,
-                        partition=partition,
-                        offset=offset,
-                        key=msg.key(),
-                        value=msg.value(),
+                if self._error_router and event.raw is not None:
+                    self._error_router.send(
+                        source_topic=event.topic,
+                        partition=event.partition,
+                        offset=event.offset,
+                        key=event.raw.key(),
+                        value=event.raw.value(),
                         error=exc,
                         extra_headers={"dlq.sink_id": sink.sink_id},
                     )
@@ -226,10 +183,8 @@ class Pipeline:
         """Stop health server, monitors, drain workers, flush sinks."""
         if self._health_server:
             await self._health_server.stop()
-        if self._schema_monitor:
-            await self._schema_monitor.stop()
-        if self._lag_monitor:
-            await self._lag_monitor.stop()
+        if self._monitor:
+            await self._monitor.stop()
 
         # Cancel all partition workers
         for worker in self._partition_workers.values():
@@ -258,7 +213,7 @@ class Pipeline:
 
     def _maybe_commit_watermark(self) -> None:
         """Commit the min-watermark offset across all sinks."""
-        if not self._sinks or self._consumer is None:
+        if not self._sinks or self._source is None:
             return
 
         all_partitions: set[tuple[str, int]] = set()
@@ -283,16 +238,16 @@ class Pipeline:
         if not to_commit:
             return
 
-        self._consumer.commit_offsets(to_commit)
+        self._source.commit_offsets(to_commit)
         self._last_committed.update(to_commit)
 
     def stop(self) -> None:
         """Signal the pipeline to stop."""
-        if self._consumer is not None:
-            self._consumer.stop()
+        if self._source is not None:
+            self._source.stop()
 
     async def health(self) -> dict[str, Any]:
-        """Aggregate health from source connector + all sinks."""
+        """Aggregate health from source + all sinks."""
         sink_health = []
         for sink in self._sinks:
             try:
@@ -302,30 +257,19 @@ class Pipeline:
                     {"sink_id": sink.sink_id, "status": "error", "error": str(exc)}
                 )
 
-        # Check source connector status
+        # Check source health
         source_status: dict[str, Any] = {}
-        try:
-            from cdc_platform.sources.debezium.config import connector_name
+        if self._source is not None:
+            try:
+                source_status = await self._source.health()
+            except Exception as exc:
+                source_status = {"status": "error", "error": str(exc)}
 
-            name = connector_name(self._pipeline)
-            async with DebeziumClient(self._platform.connector) as client:
-                source_status = await client.get_connector_status(name)
-        except Exception as exc:
-            source_status = {"status": "error", "error": str(exc)}
-
-        lag_data = self._lag_monitor.latest_lag if self._lag_monitor else []
+        lag_data = await self._monitor.get_lag() if self._monitor else []
 
         return {
             "pipeline_id": self._pipeline.pipeline_id,
             "source": source_status,
             "sinks": sink_health,
-            "consumer_lag": [
-                {
-                    "topic": p.topic,
-                    "partition": p.partition,
-                    "lag": p.lag,
-                    "offset": p.current_offset,
-                }
-                for p in lag_data
-            ],
+            "consumer_lag": lag_data,
         }

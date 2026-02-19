@@ -6,15 +6,19 @@ This guide covers deploying CDC Platform in production on Kubernetes. It covers 
 
 CDC Platform follows a **two-phase deployment model**:
 
-1. **Platform** (deployed once) — shared infrastructure that all pipelines depend on: Kafka, Schema Registry, and Kafka Connect with Debezium plugins.
-2. **Pipelines** (deployed on demand) — each pipeline is a `cdc run` process with its own config. It auto-registers its Debezium connector on the shared Kafka Connect, consumes CDC events from Kafka, and routes them to sinks.
+1. **Platform** (deployed once) — shared infrastructure that all pipelines depend on. For the default `kafka` transport: Kafka, Schema Registry, and Kafka Connect with Debezium plugins.
+2. **Pipelines** (deployed on demand) — each pipeline is a `cdc run` process with its own config. It provisions transport resources (topics + connectors), consumes CDC events via the configured `EventSource`, and routes them to sinks.
 
 ```
- Source DB ──▸ Debezium (Kafka Connect) ──▸ Kafka ──▸ Pipeline Worker ──▸ Sinks
-              ─────── Platform (shared) ──────        ── Per-pipeline ──
+                        ┌── Transport (configurable) ──┐
+ Source DB ──▸ Provisioner ──▸ EventSource ──▸ Pipeline Worker ──▸ Sinks
+                        └──────────────────────────────┘
+              ─── Platform (shared) ───        ── Per-pipeline ──
 ```
 
-The platform Helm chart deploys the shared infrastructure. Each pipeline runs as a separate Kubernetes Deployment using the pipeline Docker image.
+The platform uses a transport-agnostic architecture. The `transport_mode` setting in `platform.yaml` selects the event transport backend (currently `kafka`). The core pipeline interacts only with protocol abstractions (`EventSource`, `Provisioner`, `ErrorRouter`, `SourceMonitor`), making the transport layer pluggable.
+
+The platform Helm chart deploys the shared infrastructure for the Kafka transport. Each pipeline runs as a separate Kubernetes Deployment using the pipeline Docker image.
 
 ### What the Platform Chart Deploys
 

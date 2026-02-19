@@ -1,40 +1,55 @@
-"""Abstract source connector protocol.
+"""Transport-agnostic event source protocol.
 
-New source types (MySQL, MongoDB, etc.) implement this protocol to plug
-into the platform without modifying core code.
+Defines SourceEvent (the universal event envelope) and EventSource
+(the protocol every transport — Kafka, Pub/Sub, embedded PG — must satisfy).
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-from cdc_platform.config.models import PipelineConfig
+
+@dataclass(slots=True)
+class SourceEvent:
+    """Universal CDC event envelope — transport-agnostic.
+
+    Every transport adapter converts its native message into this dataclass
+    before handing it to the pipeline.
+    """
+
+    key: dict[str, Any] | None
+    value: dict[str, Any] | None
+    topic: str  # logical channel (Kafka topic, PG slot name, Pub/Sub subscription)
+    partition: int  # shard (Kafka partition, 0 for non-partitioned)
+    offset: int  # position (Kafka offset, PG LSN, etc.)
+    raw: Any = field(default=None, repr=False)  # original transport message
 
 
 @runtime_checkable
-class SourceConnector(Protocol):
-    """Protocol that every CDC source connector must satisfy."""
+class EventSource(Protocol):
+    """Protocol that every event transport must satisfy.
 
-    async def register(self, pipeline: PipelineConfig) -> dict[str, Any]:
-        """Deploy / register the connector, returning its status."""
+    The pipeline calls these methods without knowing which transport is in use.
+    """
+
+    async def start(
+        self,
+        handler: Any,
+        on_assign: Any | None = None,
+        on_revoke: Any | None = None,
+    ) -> None:
+        """Begin consuming events; call *handler(event)* for each one."""
         ...
 
-    async def status(self, connector_name: str) -> dict[str, Any]:
-        """Return the current connector status."""
+    def commit_offsets(self, offsets: dict[tuple[str, int], int]) -> None:
+        """Commit processed offsets back to the transport."""
         ...
 
-    async def delete(self, connector_name: str) -> None:
-        """Remove the connector."""
+    def stop(self) -> None:
+        """Signal the source to stop consuming."""
         ...
 
-    async def pause(self, connector_name: str) -> None:
-        """Pause the connector."""
-        ...
-
-    async def resume(self, connector_name: str) -> None:
-        """Resume a paused connector."""
-        ...
-
-    async def restart(self, connector_name: str) -> None:
-        """Restart the connector (and all its tasks)."""
+    async def health(self) -> dict[str, Any]:
+        """Return transport-specific health information."""
         ...

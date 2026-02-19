@@ -10,6 +10,7 @@ from cdc_platform.config.models import (
     PlatformConfig,
     SourceConfig,
     SourceType,
+    TransportMode,
 )
 
 
@@ -82,9 +83,28 @@ class TestPipelineConfig:
             )
 
 
+class TestTransportMode:
+    def test_default_is_kafka(self):
+        cfg = PlatformConfig()
+        assert cfg.transport_mode == TransportMode.KAFKA
+
+    def test_explicit_kafka(self):
+        cfg = PlatformConfig(transport_mode="kafka")
+        assert cfg.transport_mode == TransportMode.KAFKA
+
+    def test_kafka_requires_kafka_config(self):
+        with pytest.raises(ValidationError, match="kafka config is required"):
+            PlatformConfig(transport_mode="kafka", kafka=None)
+
+    def test_kafka_requires_connector_config(self):
+        with pytest.raises(ValidationError, match="connector config is required"):
+            PlatformConfig(transport_mode="kafka", connector=None)
+
+
 class TestPlatformConfig:
     def test_all_defaults(self):
         cfg = PlatformConfig()
+        assert cfg.transport_mode == TransportMode.KAFKA
         assert cfg.kafka.bootstrap_servers == "localhost:9092"
         assert cfg.connector.connect_url == "http://localhost:8083"
         assert cfg.dlq.enabled is True

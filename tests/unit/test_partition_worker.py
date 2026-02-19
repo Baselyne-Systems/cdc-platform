@@ -16,6 +16,7 @@ from cdc_platform.config.models import (
     WebhookSinkConfig,
 )
 from cdc_platform.pipeline.runner import Pipeline
+from cdc_platform.sources.base import SourceEvent
 
 
 def _make_pipeline() -> PipelineConfig:
@@ -36,16 +37,16 @@ def _make_platform() -> PlatformConfig:
     return PlatformConfig(max_buffered_messages=100)
 
 
-def _mock_message(
+def _make_event(
     topic: str = "cdc.public.t", partition: int = 0, offset: int = 0
-) -> MagicMock:
-    msg = MagicMock()
-    msg.topic.return_value = topic
-    msg.partition.return_value = partition
-    msg.offset.return_value = offset
-    msg.key.return_value = b"k"
-    msg.value.return_value = b"v"
-    return msg
+) -> SourceEvent:
+    return SourceEvent(
+        key=None,
+        value=None,
+        topic=topic,
+        partition=partition,
+        offset=offset,
+    )
 
 
 def _tracking_sink() -> tuple[AsyncMock, list[tuple[int, int]]]:
@@ -70,9 +71,9 @@ class TestPartitionWorker:
         sink, _ = _tracking_sink()
         pipeline._sinks = [sink]
 
-        await pipeline._enqueue(None, None, _mock_message(partition=0))
-        await pipeline._enqueue(None, None, _mock_message(partition=1))
-        await pipeline._enqueue(None, None, _mock_message(partition=2))
+        await pipeline._enqueue(_make_event(partition=0))
+        await pipeline._enqueue(_make_event(partition=1))
+        await pipeline._enqueue(_make_event(partition=2))
 
         assert len(pipeline._partition_workers) == 3
         assert ("cdc.public.t", 0) in pipeline._partition_workers
@@ -140,8 +141,8 @@ class TestPartitionWorker:
 
         # Enqueue: p0 gets 3 slow messages, p1 gets 3 fast messages
         for i in range(3):
-            await pipeline._enqueue(None, None, _mock_message(partition=0, offset=i))
-            await pipeline._enqueue(None, None, _mock_message(partition=1, offset=i))
+            await pipeline._enqueue(_make_event(partition=0, offset=i))
+            await pipeline._enqueue(_make_event(partition=1, offset=i))
 
         # Wait for p1 to finish (should be fast)
         await asyncio.sleep(0.05)
@@ -162,8 +163,8 @@ class TestPartitionWorker:
         """Watermark commits use per-partition min across sinks (unchanged behavior)."""
         pipeline = Pipeline(_make_pipeline(), _make_platform())
 
-        mock_consumer = MagicMock()
-        pipeline._consumer = mock_consumer
+        mock_source = MagicMock()
+        pipeline._source = mock_source
 
         sink1 = AsyncMock()
         sink1.sink_id = "s1"
@@ -179,6 +180,4 @@ class TestPartitionWorker:
 
         pipeline._maybe_commit_watermark()
 
-        mock_consumer.commit_offsets.assert_called_once_with(
-            {("t", 0): 8, ("t", 1): 20}
-        )
+        mock_source.commit_offsets.assert_called_once_with({("t", 0): 8, ("t", 1): 20})

@@ -21,6 +21,7 @@ class TestLoadDefaults:
 
     def test_loads_platform_defaults(self):
         defaults = load_defaults("platform")
+        assert defaults["transport_mode"] == "kafka"
         assert defaults["kafka"]["bootstrap_servers"] == "localhost:9092"
         assert defaults["dlq"]["enabled"] is True
 

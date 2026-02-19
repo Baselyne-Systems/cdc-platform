@@ -1,6 +1,8 @@
 # Default platform infrastructure configuration.
 # All fields have sensible defaults — this file is optional for local dev.
 
+transport_mode: kafka
+
 kafka:
   bootstrap_servers: localhost:9092
   schema_registry_url: http://localhost:8081
