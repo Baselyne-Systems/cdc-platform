@@ -55,9 +55,14 @@ def ensure_topics(
         logger.info("topics.all_exist", count=len(topics))
         return
     futures = admin.create_topics(to_create)
+    failed: list[str] = []
     for topic, future in futures.items():
         try:
             future.result()
             logger.info("topic.created", topic=topic)
         except Exception as exc:
-            logger.warning("topic.create_failed", topic=topic, error=str(exc))
+            logger.error("topic.create_failed", topic=topic, error=str(exc))
+            failed.append(f"{topic}: {exc}")
+    if failed:
+        msg = f"Failed to create {len(failed)} topic(s): {'; '.join(failed)}"
+        raise RuntimeError(msg)

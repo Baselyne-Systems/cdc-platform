@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, PropertyMock
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
@@ -300,3 +301,69 @@ class TestWatermarkCommit:
         pipeline._maybe_commit_watermark()
 
         mock_source.commit_offsets.assert_not_called()
+
+
+@pytest.mark.asyncio
+class TestPartitionWorkerResilience:
+    async def test_worker_survives_dispatch_exception(self):
+        """A partition worker must not die when _dispatch_to_sinks raises."""
+        config = _make_pipeline(_webhook_sink_config("wh1"))
+        pipeline = Pipeline(config, _make_platform())
+
+        failing_sink = AsyncMock()
+        failing_sink.sink_id = "wh1"
+        type(failing_sink).flushed_offsets = PropertyMock(return_value={})
+        pipeline._sinks = [failing_sink]
+        pipeline._error_router = MagicMock()
+
+        # Make _dispatch_to_sinks raise: sink fails AND error router fails
+        pipeline._error_router.send.side_effect = RuntimeError("DLQ broker down")
+        failing_sink.write.side_effect = Exception("sink error")
+
+        queue: asyncio.Queue[SourceEvent] = asyncio.Queue(maxsize=10)
+        tp = ("cdc.public.customers", 0)
+
+        worker = asyncio.create_task(pipeline._partition_loop(tp, queue))
+
+        # Send an event that will cause an exception in dispatch
+        await queue.put(_make_event(offset=1))
+        await asyncio.sleep(0.05)
+
+        # Worker should still be alive — send another event
+        failing_sink.write.side_effect = None
+        failing_sink.write.reset_mock()
+        await queue.put(_make_event(offset=2))
+        await asyncio.sleep(0.05)
+
+        # The second event should have been processed
+        failing_sink.write.assert_awaited_once()
+
+        worker.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await worker
+
+    async def test_worker_logs_exception(self):
+        """Worker logs the exception when dispatch fails."""
+        config = _make_pipeline(_webhook_sink_config("wh1"))
+        pipeline = Pipeline(config, _make_platform())
+
+        failing_sink = AsyncMock()
+        failing_sink.sink_id = "wh1"
+        type(failing_sink).flushed_offsets = PropertyMock(return_value={})
+        failing_sink.write.side_effect = Exception("boom")
+        pipeline._sinks = [failing_sink]
+        pipeline._error_router = MagicMock()
+        pipeline._error_router.send.side_effect = RuntimeError("DLQ also down")
+
+        queue: asyncio.Queue[SourceEvent] = asyncio.Queue(maxsize=10)
+        tp = ("cdc.public.customers", 0)
+        worker = asyncio.create_task(pipeline._partition_loop(tp, queue))
+
+        with patch("cdc_platform.pipeline.runner.logger") as mock_logger:
+            await queue.put(_make_event(offset=1))
+            await asyncio.sleep(0.05)
+            mock_logger.exception.assert_called()
+
+        worker.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await worker

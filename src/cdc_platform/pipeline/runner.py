@@ -116,11 +116,24 @@ class Pipeline:
     async def _partition_loop(
         self, tp: tuple[str, int], queue: asyncio.Queue[SourceEvent]
     ) -> None:
-        """Per-partition worker — drains queue and dispatches to sinks."""
+        """Per-partition worker — drains queue and dispatches to sinks.
+
+        Catches all exceptions to prevent silent worker death.  A single
+        dispatch failure is logged and the worker continues with the next
+        event.  The error router (DLQ) handles per-sink routing inside
+        ``_dispatch_to_sinks``, so swallowing here is safe.
+        """
         while True:
             event = await queue.get()
             try:
                 await self._dispatch_to_sinks(event)
+            except Exception:
+                logger.exception(
+                    "pipeline.partition_worker_error",
+                    topic=event.topic,
+                    partition=event.partition,
+                    offset=event.offset,
+                )
             finally:
                 queue.task_done()
 

@@ -1,6 +1,6 @@
 """Unit tests for the DLQ handler."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from cdc_platform.config.models import DLQConfig
 from cdc_platform.streaming.dlq import DLQHandler
@@ -63,3 +63,54 @@ class TestDLQHandler:
 
         kwargs = producer.produce.call_args
         assert kwargs.kwargs["headers"] == []
+
+    def test_produce_failure_does_not_raise(self):
+        """DLQ write failure is caught and logged, not propagated."""
+        producer = MagicMock()
+        producer.produce.side_effect = RuntimeError("broker down")
+        handler = DLQHandler(producer, DLQConfig())
+
+        # Should not raise
+        handler.send(
+            source_topic="t",
+            partition=0,
+            offset=0,
+            key=None,
+            value=None,
+            error=ValueError("original error"),
+        )
+
+    def test_flush_failure_does_not_raise(self):
+        """DLQ flush failure is caught and logged, not propagated."""
+        producer = MagicMock()
+        producer.flush.side_effect = RuntimeError("flush timeout")
+        handler = DLQHandler(producer, DLQConfig())
+
+        handler.send(
+            source_topic="t",
+            partition=0,
+            offset=0,
+            key=None,
+            value=None,
+            error=ValueError("original error"),
+        )
+
+    def test_produce_failure_logs_error(self):
+        """DLQ write failure is logged at error level."""
+        producer = MagicMock()
+        producer.produce.side_effect = RuntimeError("broker down")
+        handler = DLQHandler(producer, DLQConfig())
+
+        with patch("cdc_platform.streaming.dlq.logger") as mock_logger:
+            handler.send(
+                source_topic="t",
+                partition=0,
+                offset=0,
+                key=None,
+                value=None,
+                error=ValueError("bad data"),
+            )
+            mock_logger.error.assert_called_once()
+            call_kwargs = mock_logger.error.call_args.kwargs
+            assert call_kwargs["dlq_error"] == "broker down"
+            assert call_kwargs["original_error"] == "bad data"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import MagicMock, patch
 
@@ -243,3 +244,30 @@ class TestPostgresSink:
 
         sql = mock_cursor.executemany.call_args[0][0]
         assert "ON CONFLICT" not in sql
+
+    async def test_flush_runs_in_executor(self):
+        """flush() must run DB operations in a thread executor, not block the loop."""
+        sink = _make_sink(batch_size=10)
+        mock_cursor = MagicMock()
+        sink._conn = MagicMock()
+        sink._conn.cursor.return_value = mock_cursor
+
+        await sink.write(key=None, value=None, topic="t", partition=0, offset=1)
+
+        loop = asyncio.get_running_loop()
+        with patch.object(loop, "run_in_executor", wraps=loop.run_in_executor) as spy:
+            await sink.flush()
+            spy.assert_called_once()
+
+    async def test_health_runs_in_executor(self):
+        """health() must run DB ping in a thread executor."""
+        sink = _make_sink()
+        mock_cursor = MagicMock()
+        sink._conn = MagicMock()
+        sink._conn.cursor.return_value = mock_cursor
+
+        loop = asyncio.get_running_loop()
+        with patch.object(loop, "run_in_executor", wraps=loop.run_in_executor) as spy:
+            h = await sink.health()
+            spy.assert_called_once()
+            assert h["status"] == "running"

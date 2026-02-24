@@ -56,13 +56,25 @@ class DLQHandler:
             (k, v.encode() if isinstance(v, str) else v) for k, v in headers.items()
         ]
 
-        self._producer.produce(
-            topic=dlq,
-            key=key,
-            value=value,
-            headers=kafka_headers,
-        )
-        self._producer.flush(timeout=10)
+        try:
+            self._producer.produce(
+                topic=dlq,
+                key=key,
+                value=value,
+                headers=kafka_headers,
+            )
+            self._producer.flush(timeout=10)
+        except Exception as dlq_exc:
+            logger.error(
+                "dlq.write_failed",
+                topic=dlq,
+                source_topic=source_topic,
+                partition=partition,
+                offset=offset,
+                original_error=str(error),
+                dlq_error=str(dlq_exc),
+            )
+            return
         logger.warning(
             "dlq.message_sent",
             topic=dlq,

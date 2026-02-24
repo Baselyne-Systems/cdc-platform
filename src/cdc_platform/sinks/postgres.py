@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -50,12 +51,16 @@ class PostgresSink:
             )
             raise ImportError(msg) from None
 
-        self._conn = psycopg2.connect(
-            host=self._pg_config.host,
-            port=self._pg_config.port,
-            dbname=self._pg_config.database,
-            user=self._pg_config.username,
-            password=self._pg_config.password.get_secret_value(),
+        loop = asyncio.get_running_loop()
+        self._conn = await loop.run_in_executor(
+            None,
+            lambda: psycopg2.connect(
+                host=self._pg_config.host,
+                port=self._pg_config.port,
+                dbname=self._pg_config.database,
+                user=self._pg_config.username,
+                password=self._pg_config.password.get_secret_value(),
+            ),
         )
         self._conn.autocommit = False
         logger.info(
@@ -123,7 +128,8 @@ class PostgresSink:
                 self._conn.rollback()
                 raise
 
-        _insert()
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, _insert)
 
         for row in batch:
             key_tp = (row[2], row[3])  # (topic, partition)
@@ -146,13 +152,19 @@ class PostgresSink:
     async def health(self) -> dict[str, Any]:
         connected = False
         if self._conn is not None:
-            try:
-                cur = self._conn.cursor()
-                cur.execute("SELECT 1")
-                cur.close()
-                connected = True
-            except Exception:
-                connected = False
+
+            def _ping() -> bool:
+                try:
+                    assert self._conn is not None
+                    cur = self._conn.cursor()
+                    cur.execute("SELECT 1")
+                    cur.close()
+                    return True
+                except Exception:
+                    return False
+
+            loop = asyncio.get_running_loop()
+            connected = await loop.run_in_executor(None, _ping)
         return {
             "sink_id": self.sink_id,
             "type": "postgres",

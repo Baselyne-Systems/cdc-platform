@@ -149,3 +149,54 @@ class TestCommitOffsets:
 
         call_kwargs = mock_kafka.commit.call_args.kwargs
         assert call_kwargs["asynchronous"] is False
+
+
+class TestHandleError:
+    def test_commits_offset_after_successful_dlq_send(self):
+        consumer = _make_consumer()
+        mock_kafka = MagicMock()
+        consumer._consumer = mock_kafka
+        consumer._dlq = MagicMock()
+
+        msg = MagicMock()
+        msg.topic.return_value = "t"
+        msg.partition.return_value = 0
+        msg.offset.return_value = 42
+
+        consumer._handle_error(msg, ValueError("bad data"))
+
+        consumer._dlq.send.assert_called_once()
+        mock_kafka.commit.assert_called_once_with(message=msg)
+
+    def test_does_not_commit_offset_when_dlq_fails(self):
+        """If DLQ send fails, offset must NOT be committed (prevents data loss)."""
+        consumer = _make_consumer()
+        mock_kafka = MagicMock()
+        consumer._consumer = mock_kafka
+        consumer._dlq = MagicMock()
+        consumer._dlq.send.side_effect = RuntimeError("DLQ broker down")
+
+        msg = MagicMock()
+        msg.topic.return_value = "t"
+        msg.partition.return_value = 0
+        msg.offset.return_value = 42
+
+        consumer._handle_error(msg, ValueError("bad data"))
+
+        mock_kafka.commit.assert_not_called()
+
+    def test_commits_offset_when_no_dlq_configured(self):
+        """When DLQ is disabled, commit the offset to avoid infinite retry."""
+        consumer = _make_consumer()
+        mock_kafka = MagicMock()
+        consumer._consumer = mock_kafka
+        consumer._dlq = None
+
+        msg = MagicMock()
+        msg.topic.return_value = "t"
+        msg.partition.return_value = 0
+        msg.offset.return_value = 42
+
+        consumer._handle_error(msg, ValueError("bad data"))
+
+        mock_kafka.commit.assert_called_once_with(message=msg)

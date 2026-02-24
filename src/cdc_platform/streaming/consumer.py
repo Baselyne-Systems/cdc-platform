@@ -158,21 +158,37 @@ class CDCConsumer:
         topic = msg.topic()
         partition = msg.partition()
         offset = msg.offset()
+        dlq_ok = False
         if (
             self._dlq
             and topic is not None
             and partition is not None
             and offset is not None
         ):
-            self._dlq.send(
-                source_topic=topic,
-                partition=partition,
-                offset=offset,
-                key=msg.key(),
-                value=msg.value(),
-                error=exc,
-            )
-        self._consumer.commit(message=msg)
+            try:
+                self._dlq.send(
+                    source_topic=topic,
+                    partition=partition,
+                    offset=offset,
+                    key=msg.key(),
+                    value=msg.value(),
+                    error=exc,
+                )
+                dlq_ok = True
+            except Exception as dlq_exc:
+                logger.error(
+                    "consumer.dlq_send_failed",
+                    topic=topic,
+                    partition=partition,
+                    offset=offset,
+                    error=str(dlq_exc),
+                )
+        elif self._dlq is None:
+            # No DLQ configured — commit anyway to avoid infinite retry loop
+            dlq_ok = True
+
+        if dlq_ok:
+            self._consumer.commit(message=msg)
 
     def commit_offsets(self, offsets: dict[tuple[str, int], int]) -> None:
         """Commit specific offsets for (topic, partition) pairs."""
