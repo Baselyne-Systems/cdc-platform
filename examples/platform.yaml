@@ -2,6 +2,10 @@
 # Only specify fields that differ from the built-in defaults.
 # See src/cdc_platform/config/defaults/platform.yaml for all defaults.
 
+# Event transport backend. Currently supported: kafka
+# Future: pubsub, embedded
+transport_mode: kafka
+
 kafka:
   bootstrap_servers: kafka-prod:9092
   schema_registry_url: http://registry-prod:8081

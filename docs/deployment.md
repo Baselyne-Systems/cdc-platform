@@ -31,9 +31,10 @@ The platform Helm chart deploys the shared infrastructure for the Kafka transpor
 ### What a Pipeline Is
 
 A pipeline is a single `cdc run` process that:
-- Registers a Debezium connector for its source database on the shared Kafka Connect
-- Consumes CDC events from Kafka topics
+- Provisions transport resources via the `Provisioner` (for Kafka: creates topics, registers a Debezium connector)
+- Consumes CDC events via the `EventSource` (for Kafka: Avro-deserializing consumer with manual offset control)
 - Routes events to configured sinks (webhooks, PostgreSQL, Iceberg)
+- Monitors source health via the `SourceMonitor` (for Kafka: schema changes + consumer lag)
 - Exposes health endpoints for Kubernetes probes
 
 Each pipeline runs independently. You deploy one Kubernetes Deployment per pipeline.
@@ -247,6 +248,7 @@ data:
           write_mode: upsert
 
   platform.yaml: |
+    transport_mode: kafka
     kafka:
       bootstrap_servers: cdc-platform-kafka:9092
       schema_registry_url: http://cdc-platform-schema-registry:8081
@@ -361,20 +363,21 @@ Important: each pipeline must use a **unique `slot_name`** in its source config 
 
 When a pipeline starts (`cdc run`):
 
-1. **Topic provisioning** — Kafka topics are auto-created based on source tables
-2. **Connector registration** — A Debezium connector is registered on Kafka Connect
-3. **Sink initialization** — All enabled sinks are started
-4. **Monitor startup** — Schema monitor + lag monitor begin polling
-5. **Health server startup** — HTTP health endpoints become available
-6. **Consume loop** — Events are consumed from Kafka and dispatched to sinks
+1. **Transport provisioning** — The `Provisioner` creates transport resources. For Kafka: auto-creates topics and registers a Debezium connector on Kafka Connect.
+2. **Error router initialization** — The `ErrorRouter` is created for dead-letter routing.
+3. **Sink initialization** — All enabled sinks are started.
+4. **Event source creation** — The `EventSource` is created for the configured `transport_mode`.
+5. **Source monitor startup** — The `SourceMonitor` begins background polling (for Kafka: schema changes + consumer lag).
+6. **Health server startup** — HTTP health endpoints become available.
+7. **Consume loop** — The `EventSource` polls the transport, converts messages to `SourceEvent` objects, and dispatches to sinks via per-partition workers.
 
 On shutdown (SIGTERM from Kubernetes):
 
 1. Health server stops (readiness probe fails, traffic drains)
-2. Schema + lag monitors stop
+2. Source monitor stops
 3. Partition workers are cancelled
 4. All sinks are flushed and stopped
-5. Final offset commit
+5. Final offset commit via `EventSource.commit_offsets()`
 
 ---
 
@@ -393,9 +396,9 @@ The pipeline exposes two HTTP endpoints on the configured `health_port` (default
 
 The `/readyz` endpoint delegates to `Pipeline.health()`, which checks:
 
-- **Source connector status** — queries Kafka Connect REST API for connector and task state
-- **Sink health** — each sink reports its connection status
-- **Consumer lag** — current lag per partition (informational, does not fail the probe)
+- **Source health** — delegates to `EventSource.health()`. For Kafka: queries the Kafka Connect REST API for Debezium connector and task state.
+- **Sink health** — each sink reports its connection status.
+- **Consumer lag** — delegates to `SourceMonitor.get_lag()`. For Kafka: current lag per partition (informational, does not fail the probe).
 
 If any source or sink reports `"status": "error"`, the readiness probe returns 503.
 
@@ -427,7 +430,9 @@ CDC Platform uses structured logging (structlog). To expose metrics to Prometheu
 All fields with defaults. Only override what differs from your environment.
 
 ```yaml
-kafka:
+transport_mode: kafka              # Event transport backend (currently: kafka)
+
+kafka:                             # Required when transport_mode: kafka
   bootstrap_servers: localhost:9092
   schema_registry_url: http://localhost:8081
   group_id: cdc-platform
