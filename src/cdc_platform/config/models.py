@@ -68,6 +68,8 @@ class KafkaConfig(BaseModel):
     auto_offset_reset: str = "earliest"
     enable_idempotence: bool = True
     acks: str = "all"
+    topic_num_partitions: int = 1
+    topic_replication_factor: int = 1
 
 
 class ConnectorConfig(BaseModel):

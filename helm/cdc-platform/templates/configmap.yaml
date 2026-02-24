@@ -1,3 +1,4 @@
+{{- if eq .Values.platform.transportMode "kafka" }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -19,3 +20,4 @@ data:
     offset.storage.replication.factor=1
     status.storage.replication.factor=1
     plugin.path=/usr/share/java,/usr/share/confluent-hub-components
+{{- end }}

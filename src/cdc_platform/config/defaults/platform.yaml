@@ -10,6 +10,8 @@ kafka:
   auto_offset_reset: earliest
   enable_idempotence: true
   acks: all
+  topic_num_partitions: 1
+  topic_replication_factor: 1
 
 connector:
   connect_url: http://localhost:8083

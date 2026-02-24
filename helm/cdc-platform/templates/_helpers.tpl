@@ -67,3 +67,10 @@ http://{{ include "cdc-platform.fullname" . }}-schema-registry:8081
 {{ .Values.schemaRegistry.externalUrl | default "http://localhost:8081" }}
 {{- end -}}
 {{- end }}
+
+{{/*
+Check if transport mode is Kafka.
+*/}}
+{{- define "cdc-platform.isKafkaTransport" -}}
+{{- eq (.Values.platform.transportMode | default "kafka") "kafka" -}}
+{{- end }}

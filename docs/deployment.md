@@ -379,6 +379,12 @@ On shutdown (SIGTERM from Kubernetes):
 4. All sinks are flushed and stopped
 5. Final offset commit via `EventSource.commit_offsets()`
 
+To teardown transport resources (remove Debezium connector):
+
+```bash
+cdc undeploy pipeline.yaml --platform-config platform.yaml
+```
+
 ---
 
 ## Health & Monitoring
@@ -439,6 +445,8 @@ kafka:                             # Required when transport_mode: kafka
   auto_offset_reset: earliest
   enable_idempotence: true
   acks: all
+  topic_num_partitions: 1          # Partition count for auto-created topics
+  topic_replication_factor: 1      # Replication factor for auto-created topics
 
 connector:
   connect_url: http://localhost:8083
@@ -498,8 +506,8 @@ cdc run pipeline.yaml
 ## Production Checklist
 
 ### Kafka
-- [ ] Topic replication factor >= 3
-- [ ] Partition count set based on expected throughput (1 partition ≈ 10 MB/s)
+- [ ] `topic_replication_factor` >= 3 in platform config (`kafka.topic_replication_factor`)
+- [ ] `topic_num_partitions` set based on expected throughput (`kafka.topic_num_partitions`, 1 partition ≈ 10 MB/s)
 - [ ] Retention set appropriately (`retention.ms`, `retention.bytes`)
 - [ ] Monitor under-replicated partitions
 
@@ -550,6 +558,17 @@ cdc run examples/demo-config.yaml
 
 # Tear down
 make down
+```
+
+### Helm Transport Mode
+
+The Helm chart supports a `platform.transportMode` value (default: `kafka`). When set to a non-Kafka transport, Kafka Connect resources (deployment, service, configmap) are not rendered. Configure this in your values override:
+
+```yaml
+platform:
+  transportMode: kafka           # or a future transport mode
+  topicNumPartitions: 6          # topic partitions for auto-created topics
+  topicReplicationFactor: 3      # replication factor for auto-created topics
 ```
 
 The local stack includes:

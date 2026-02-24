@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from cdc_platform.config.models import (
+    KafkaConfig,
     PipelineConfig,
     PlatformConfig,
     SourceConfig,
@@ -45,6 +46,30 @@ class TestKafkaProvisioner:
             mock_client.register_connector.assert_awaited_once()
             assert "topics" in result
             assert "connector" in result
+
+    async def test_provision_passes_partition_and_replication_config(self):
+        platform = PlatformConfig(
+            kafka=KafkaConfig(topic_num_partitions=6, topic_replication_factor=3)
+        )
+        provisioner = KafkaProvisioner(platform)
+
+        with (
+            patch(
+                "cdc_platform.sources.kafka.provisioner.ensure_topics"
+            ) as mock_ensure,
+            patch("cdc_platform.sources.kafka.provisioner.DebeziumClient") as mock_cls,
+        ):
+            mock_client = AsyncMock()
+            mock_client.register_connector.return_value = {"name": "cdc-test"}
+            mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            await provisioner.provision(_pipeline())
+
+            mock_ensure.assert_called_once()
+            call_kwargs = mock_ensure.call_args
+            assert call_kwargs.kwargs["num_partitions"] == 6
+            assert call_kwargs.kwargs["replication_factor"] == 3
 
     async def test_teardown_deletes_connector(self):
         platform = PlatformConfig()

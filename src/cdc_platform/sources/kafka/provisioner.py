@@ -28,7 +28,12 @@ class KafkaProvisioner:
 
         # 1. Ensure topics exist
         all_topics = topics_for_pipeline(pipeline, self._platform)
-        ensure_topics(self._platform.kafka.bootstrap_servers, all_topics)
+        ensure_topics(
+            self._platform.kafka.bootstrap_servers,
+            all_topics,
+            num_partitions=self._platform.kafka.topic_num_partitions,
+            replication_factor=self._platform.kafka.topic_replication_factor,
+        )
 
         # 2. Deploy Debezium connector
         async with DebeziumClient(self._platform.connector) as client:

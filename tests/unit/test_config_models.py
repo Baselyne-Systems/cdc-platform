@@ -45,6 +45,13 @@ class TestKafkaConfig:
         cfg = KafkaConfig()
         assert cfg.bootstrap_servers == "localhost:9092"
         assert cfg.enable_idempotence is True
+        assert cfg.topic_num_partitions == 1
+        assert cfg.topic_replication_factor == 1
+
+    def test_custom_topic_partitions_and_replication(self):
+        cfg = KafkaConfig(topic_num_partitions=6, topic_replication_factor=3)
+        assert cfg.topic_num_partitions == 6
+        assert cfg.topic_replication_factor == 3
 
 
 class TestDLQConfig:

@@ -9,6 +9,8 @@ transport_mode: kafka
 kafka:
   bootstrap_servers: kafka-prod:9092
   schema_registry_url: http://registry-prod:8081
+  topic_num_partitions: 6
+  topic_replication_factor: 3
 
 connector:
   connect_url: http://connect-prod:8083

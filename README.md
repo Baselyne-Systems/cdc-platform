@@ -244,6 +244,8 @@ When `transport_mode` is `kafka`, the `kafka` and `connector` sections are requi
 | `kafka.auto_offset_reset`   | `earliest`              | Where to start consuming when no committed offset exists |
 | `kafka.enable_idempotence`  | `true`                  | Idempotent producer for DLQ writes       |
 | `kafka.acks`                | `all`                   | Producer acknowledgment level            |
+| `kafka.topic_num_partitions` | `1`                    | Default partition count for auto-created topics |
+| `kafka.topic_replication_factor` | `1`                | Default replication factor for auto-created topics |
 
 **Debezium connector** (`connector.*`) — Required when `transport_mode: kafka`. The platform deploys and manages the Debezium source connector via the Kafka Connect REST API.
 
@@ -315,6 +317,8 @@ cdc validate <pipeline.yaml>                              Validate pipeline conf
 cdc validate <pipeline.yaml> --platform-config prod.yaml  Validate with custom platform
 cdc deploy <pipeline.yaml>                                Provision transport resources (topics + connector)
 cdc deploy <pipeline.yaml> --platform-config prod.yaml    Deploy with custom platform
+cdc undeploy <pipeline.yaml>                              Teardown transport resources (remove connector)
+cdc undeploy <pipeline.yaml> --platform-config prod.yaml  Undeploy with custom platform
 cdc health                                                Health with defaults (transport-aware)
 cdc health --platform-config prod.yaml                    Health from platform config
 cdc consume <pipeline.yaml>                               Debug consumer via configured transport

@@ -1,5 +1,11 @@
 # -- CDC Platform shared infrastructure values --
 
+# Platform-level settings.
+platform:
+  transportMode: kafka
+  topicNumPartitions: 1
+  topicReplicationFactor: 1
+
 # Bitnami Kafka sub-chart.
 # Set kafka.enabled=false when using an external Kafka cluster (e.g. Confluent Cloud, Amazon MSK).
 kafka:

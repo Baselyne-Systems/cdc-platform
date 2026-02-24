@@ -95,6 +95,26 @@ def deploy(
 
 
 @app.command()
+def undeploy(
+    config_path: str = typer.Argument(..., help="Path to pipeline YAML"),
+    platform_config: str | None = typer.Option(
+        None, "--platform-config", help="Platform YAML"
+    ),
+) -> None:
+    """Teardown transport resources for a pipeline."""
+    pipeline, platform = _load(config_path, platform_config)
+
+    from cdc_platform.sources.factory import create_provisioner
+
+    async def _undeploy() -> None:
+        provisioner = create_provisioner(platform)
+        await provisioner.teardown(pipeline)
+        console.print(f"[green]Teardown complete:[/green] {pipeline.pipeline_id}")
+
+    asyncio.run(_undeploy())
+
+
+@app.command()
 def health(
     platform_config: str | None = typer.Option(
         None, "--platform-config", help="Platform YAML"

@@ -96,5 +96,13 @@ def check_platform_health(platform: PlatformConfig | None = None) -> PlatformHea
         components.append(check_kafka(cfg.kafka.bootstrap_servers))
         components.append(check_schema_registry(cfg.kafka.schema_registry_url))
         components.append(check_connect(cfg.connector.connect_url))
+    else:
+        components.append(
+            ComponentHealth(
+                name="transport",
+                status=Status.UNKNOWN,
+                detail=f"no health checks for transport mode: {cfg.transport_mode}",
+            )
+        )
 
     return PlatformHealth(components=components)
