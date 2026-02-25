@@ -164,9 +164,7 @@ class WalReader:
                     # Confirm LSN back to PostgreSQL via the cursor
                     if self._last_confirmed_lsn > 0:
                         try:
-                            cursor.send_feedback(
-                                flush_lsn=self._last_confirmed_lsn
-                            )
+                            cursor.send_feedback(flush_lsn=self._last_confirmed_lsn)
                         except AttributeError:
                             # Fallback for different psycopg cursor APIs
                             if hasattr(msg, "cursor") and hasattr(
