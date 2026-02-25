@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import suppress
 from typing import Any
 
@@ -227,13 +228,21 @@ class Pipeline:
                     offset=event.offset,
                     error=str(exc),
                 )
-                if self._error_router and event.raw is not None:
+                if self._error_router:
                     self._error_router.send(
                         source_topic=event.topic,
                         partition=event.partition,
                         offset=event.offset,
-                        key=event.raw.key(),
-                        value=event.raw.value(),
+                        key=(
+                            json.dumps(event.key, default=str).encode("utf-8")
+                            if event.key
+                            else None
+                        ),
+                        value=(
+                            json.dumps(event.value, default=str).encode("utf-8")
+                            if event.value
+                            else None
+                        ),
                         error=exc,
                         extra_headers={"dlq.sink_id": sink.sink_id},
                     )

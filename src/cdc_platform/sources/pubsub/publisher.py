@@ -13,12 +13,14 @@ logger = structlog.get_logger()
 class PubSubWalPublisher:
     """Publishes WAL changes to Google Cloud Pub/Sub topics.
 
-    Implements the WalPublisher protocol.
+    Implements the WalPublisher protocol.  Publishes are non-blocking;
+    futures are collected and resolved in ``flush()``.
     """
 
     def __init__(self, config: PubSubConfig) -> None:
         self._config = config
         self._publisher = None
+        self._pending_futures: list = []
 
     def _get_publisher(self):  # noqa: ANN202
         if self._publisher is None:
@@ -44,7 +46,10 @@ class PubSubWalPublisher:
         value: bytes,
         ordering_key: str | None = None,
     ) -> None:
-        """Publish a message to a Pub/Sub topic."""
+        """Publish a message to a Pub/Sub topic (non-blocking).
+
+        The returned future is collected and resolved during ``flush()``.
+        """
         publisher = self._get_publisher()
         full_topic = pubsub_topic_name(self._config.project_id, topic)
 
@@ -57,13 +62,24 @@ class PubSubWalPublisher:
             kwargs["ordering_key"] = ordering_key
 
         future = publisher.publish(**kwargs)
-        future.result()  # Wait for publish to complete
+        self._pending_futures.append(future)
 
     async def flush(self) -> None:
-        """Flush is a no-op — Pub/Sub publish() with result() is synchronous."""
+        """Wait for all pending publish futures to complete."""
+        failures = 0
+        for future in self._pending_futures:
+            try:
+                future.result()
+            except Exception:
+                failures += 1
+                logger.error("pubsub.publish_failed", exc_info=True)
+        self._pending_futures.clear()
+        if failures:
+            logger.warning("pubsub.flush_completed_with_errors", failed=failures)
 
     async def close(self) -> None:
         """Shut down the publisher transport."""
         if self._publisher is not None:
             self._publisher.stop()
             self._publisher = None
+        self._pending_futures.clear()

@@ -165,6 +165,7 @@ class WalReaderConfig(BaseModel):
     status_interval_seconds: float = Field(default=10.0, gt=0)
     batch_size: int = Field(default=100, ge=1)
     batch_timeout_seconds: float = Field(default=1.0, gt=0)
+    max_retries: int = Field(default=0, ge=0)  # 0 = unlimited retries
 
 
 class PubSubConfig(BaseModel):

@@ -3,6 +3,8 @@
 Connects to PostgreSQL via the streaming replication protocol, decodes
 pgoutput messages, serializes changes to JSON, and publishes them via
 a WalPublisher implementation.
+
+Includes automatic reconnection with exponential backoff on connection loss.
 """
 
 from __future__ import annotations
@@ -20,6 +22,9 @@ from cdc_platform.sources.wal.slot_manager import SlotManager
 
 logger = structlog.get_logger()
 
+_BACKOFF_BASE = 1.0
+_BACKOFF_CAP = 60.0
+
 
 class WalReader:
     """Reads PostgreSQL WAL via logical replication and publishes changes.
@@ -30,6 +35,9 @@ class WalReader:
         3. Decode pgoutput messages
         4. Serialize to JSON and publish via WalPublisher
         5. Periodically confirm LSN to PostgreSQL
+
+    On connection loss, automatically reconnects with exponential backoff
+    (1s → 2s → 4s → ... → 60s cap).
     """
 
     def __init__(
@@ -44,7 +52,7 @@ class WalReader:
         self._publisher = publisher
         self._topic_prefix = topic_prefix
         self._running = False
-        self._decoder = PgOutputDecoder()
+        self._last_confirmed_lsn: int = 0
 
         dsn = (
             f"host={source_config.host} port={source_config.port} "
@@ -59,7 +67,7 @@ class WalReader:
         self._dsn = dsn
 
     async def start(self) -> None:
-        """Start the WAL reader loop."""
+        """Start the WAL reader loop with automatic reconnection."""
         self._running = True
 
         # Ensure publication + slot
@@ -72,11 +80,40 @@ class WalReader:
             publication=self._wal_config.publication_name,
         )
 
-        await self._stream_changes()
+        max_retries = self._wal_config.max_retries
+        attempt = 0
+        backoff = _BACKOFF_BASE
+
+        while self._running:
+            try:
+                await self._stream_changes()
+                # Normal exit (e.g. self._running set to False)
+                break
+            except Exception:
+                if not self._running:
+                    break
+                attempt += 1
+                if max_retries > 0 and attempt >= max_retries:
+                    logger.error(
+                        "wal_reader.max_retries_exceeded",
+                        max_retries=max_retries,
+                    )
+                    raise
+                logger.warning(
+                    "wal_reader.connection_lost",
+                    attempt=attempt,
+                    backoff_seconds=backoff,
+                    exc_info=True,
+                )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, _BACKOFF_CAP)
 
     async def _stream_changes(self) -> None:
         """Open a replication connection and stream WAL changes."""
         import psycopg
+
+        # Fresh decoder on each connection — PG resends Relation messages
+        decoder = PgOutputDecoder()
 
         conn = await psycopg.AsyncConnection.connect(
             self._dsn,
@@ -85,7 +122,6 @@ class WalReader:
         )
 
         try:
-            # Start replication using the streaming replication protocol
             cursor = conn.cursor()
             slot = self._wal_config.slot_name
             pub = self._wal_config.publication_name
@@ -105,7 +141,7 @@ class WalReader:
                 if isinstance(data, memoryview):
                     data = bytes(data)
 
-                changes = self._decoder.decode(data)
+                changes = decoder.decode(data)
                 batch.extend(changes)
 
                 now = asyncio.get_event_loop().time()
@@ -116,12 +152,29 @@ class WalReader:
                     >= self._wal_config.batch_timeout_seconds
                 ):
                     await self._publish_batch(batch)
-                    batch.clear()
                     await self._publisher.flush()
 
-                    # Confirm LSN back to PostgreSQL
-                    if hasattr(msg, "cursor") and hasattr(msg.cursor, "send_feedback"):
-                        msg.cursor.send_feedback(flush_lsn=msg.data_start)
+                    # Track max LSN in the batch
+                    max_lsn = max((c.lsn for c in batch), default=0)
+                    if max_lsn > self._last_confirmed_lsn:
+                        self._last_confirmed_lsn = max_lsn
+
+                    batch.clear()
+
+                    # Confirm LSN back to PostgreSQL via the cursor
+                    if self._last_confirmed_lsn > 0:
+                        try:
+                            cursor.send_feedback(
+                                flush_lsn=self._last_confirmed_lsn
+                            )
+                        except AttributeError:
+                            # Fallback for different psycopg cursor APIs
+                            if hasattr(msg, "cursor") and hasattr(
+                                msg.cursor, "send_feedback"
+                            ):
+                                msg.cursor.send_feedback(
+                                    flush_lsn=self._last_confirmed_lsn
+                                )
                     last_confirm_time = now
 
             # Publish remaining batch

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -162,3 +163,89 @@ class TestWalReader:
         await reader.stop()
         assert reader._running is False
         assert publisher.closed is True
+
+
+class TestWalReaderReconnect:
+    @pytest.mark.asyncio
+    async def test_reconnects_on_stream_error(self):
+        """Reader should retry on connection failure with backoff."""
+        publisher = MockWalPublisher()
+        reader = WalReader(
+            source_config=SourceConfig(database="testdb", tables=["public.t"]),
+            wal_config=WalReaderConfig(max_retries=3),
+            publisher=publisher,
+            topic_prefix="cdc",
+        )
+
+        call_count = 0
+
+        async def mock_stream():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise ConnectionError("PG connection lost")
+            # On 3rd call, succeed and exit normally
+            reader._running = False
+
+        with (
+            patch.object(reader, "_stream_changes", side_effect=mock_stream),
+            patch.object(reader._slot_manager, "ensure_publication", new=AsyncMock()),
+            patch.object(reader._slot_manager, "ensure_slot", new=AsyncMock()),
+            patch("cdc_platform.sources.wal.reader.asyncio.sleep", new=AsyncMock()),
+        ):
+            await reader.start()
+
+        assert call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_max_retries_exceeded_raises(self):
+        """Reader should raise after max_retries is exceeded."""
+        publisher = MockWalPublisher()
+        reader = WalReader(
+            source_config=SourceConfig(database="testdb", tables=["public.t"]),
+            wal_config=WalReaderConfig(max_retries=2),
+            publisher=publisher,
+            topic_prefix="cdc",
+        )
+
+        async def always_fail():
+            raise ConnectionError("PG down")
+
+        with (
+            patch.object(reader, "_stream_changes", side_effect=always_fail),
+            patch.object(reader._slot_manager, "ensure_publication", new=AsyncMock()),
+            patch.object(reader._slot_manager, "ensure_slot", new=AsyncMock()),
+            patch("cdc_platform.sources.wal.reader.asyncio.sleep", new=AsyncMock()),
+            pytest.raises(ConnectionError),
+        ):
+            await reader.start()
+
+    @pytest.mark.asyncio
+    async def test_unlimited_retries_when_max_zero(self):
+        """max_retries=0 means unlimited — reader keeps retrying."""
+        publisher = MockWalPublisher()
+        reader = WalReader(
+            source_config=SourceConfig(database="testdb", tables=["public.t"]),
+            wal_config=WalReaderConfig(max_retries=0),
+            publisher=publisher,
+            topic_prefix="cdc",
+        )
+
+        call_count = 0
+
+        async def mock_stream():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 10:
+                raise ConnectionError("PG connection lost")
+            reader._running = False
+
+        with (
+            patch.object(reader, "_stream_changes", side_effect=mock_stream),
+            patch.object(reader._slot_manager, "ensure_publication", new=AsyncMock()),
+            patch.object(reader._slot_manager, "ensure_slot", new=AsyncMock()),
+            patch("cdc_platform.sources.wal.reader.asyncio.sleep", new=AsyncMock()),
+        ):
+            await reader.start()
+
+        assert call_count == 10

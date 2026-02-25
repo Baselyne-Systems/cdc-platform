@@ -109,6 +109,43 @@ class TestPipelineDispatch:
         call_kwargs = mock_error_router.send.call_args.kwargs
         assert call_kwargs["source_topic"] == "cdc.public.customers"
         assert call_kwargs["extra_headers"] == {"dlq.sink_id": "wh1"}
+        # Verify key/value are JSON-serialized from event.key/event.value
+        import json
+
+        assert json.loads(call_kwargs["key"]) == {"id": 1}
+        assert json.loads(call_kwargs["value"]) == {"name": "Alice"}
+
+    async def test_sink_failure_dlq_works_without_raw(self):
+        """DLQ should work for non-Kafka events where raw has no key()/value()."""
+        config = _make_pipeline(_webhook_sink_config("wh1"))
+        pipeline = Pipeline(config, _make_platform())
+
+        failing_sink = AsyncMock()
+        failing_sink.sink_id = "wh1"
+        failing_sink.write.side_effect = Exception("fail")
+        type(failing_sink).flushed_offsets = PropertyMock(return_value={})
+        pipeline._sinks = [failing_sink]
+
+        mock_error_router = MagicMock()
+        pipeline._error_router = mock_error_router
+
+        # Event with no raw (e.g. from Pub/Sub or Kinesis transport)
+        event = SourceEvent(
+            key={"pk": 42},
+            value={"col": "data"},
+            topic="cdc.public.orders",
+            partition=0,
+            offset=5,
+            raw=None,
+        )
+        await pipeline._dispatch_to_sinks(event)
+
+        mock_error_router.send.assert_called_once()
+        import json
+
+        call_kwargs = mock_error_router.send.call_args.kwargs
+        assert json.loads(call_kwargs["key"]) == {"pk": 42}
+        assert json.loads(call_kwargs["value"]) == {"col": "data"}
 
     async def test_one_sink_failure_doesnt_block_others(self):
         config = _make_pipeline(
