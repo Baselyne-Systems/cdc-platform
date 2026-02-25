@@ -14,8 +14,10 @@ from cdc_platform.config.models import (
 from cdc_platform.sources.debezium.client import ConnectError, DebeziumClient
 from cdc_platform.sources.debezium.config import (
     build_connector_config,
+    build_mongodb_connector_config,
     build_mysql_connector_config,
     build_postgres_connector_config,
+    build_sqlserver_connector_config,
     connector_name,
 )
 
@@ -100,6 +102,169 @@ class TestMySQLConnectorConfig:
     ):
         cfg = build_connector_config(pipeline, platform)
         assert "PostgresConnector" in cfg["connector.class"]
+
+    def test_mysql_server_id_propagated(self):
+        pipeline = PipelineConfig(
+            pipeline_id="test-mysql",
+            source=SourceConfig(
+                source_type=SourceType.MYSQL,
+                database="testdb",
+                tables=["mydb.t"],
+                mysql_server_id=99,
+            ),
+        )
+        cfg = build_mysql_connector_config(pipeline, PlatformConfig())
+        assert cfg["database.server.id"] == "99"
+
+
+class TestMongoDBConnectorConfig:
+    @pytest.fixture
+    def mongo_pipeline(self) -> PipelineConfig:
+        return PipelineConfig(
+            pipeline_id="test-mongo",
+            source=SourceConfig(
+                source_type=SourceType.MONGODB,
+                host="mongo-host",
+                port=27017,
+                database="mydb",
+                username="cdc_user",
+                password="secret",
+                tables=["mydb.orders", "mydb.customers"],
+                replica_set_name="rs0",
+            ),
+        )
+
+    def test_connector_class(self, mongo_pipeline: PipelineConfig):
+        cfg = build_mongodb_connector_config(mongo_pipeline, PlatformConfig())
+        assert cfg["connector.class"] == "io.debezium.connector.mongodb.MongoDbConnector"
+
+    def test_connection_string_contains_host_and_port(self, mongo_pipeline: PipelineConfig):
+        cfg = build_mongodb_connector_config(mongo_pipeline, PlatformConfig())
+        assert "mongo-host:27017" in cfg["mongodb.connection.string"]
+
+    def test_connection_string_contains_replica_set(self, mongo_pipeline: PipelineConfig):
+        cfg = build_mongodb_connector_config(mongo_pipeline, PlatformConfig())
+        assert "replicaSet=rs0" in cfg["mongodb.connection.string"]
+
+    def test_connection_string_no_replica_set_when_absent(self):
+        pipeline = PipelineConfig(
+            pipeline_id="test-mongo",
+            source=SourceConfig(
+                source_type=SourceType.MONGODB,
+                host="mongo-host",
+                port=27017,
+                database="mydb",
+                tables=["mydb.events"],
+            ),
+        )
+        cfg = build_mongodb_connector_config(pipeline, PlatformConfig())
+        assert "replicaSet" not in cfg["mongodb.connection.string"]
+
+    def test_collection_include_list(self, mongo_pipeline: PipelineConfig):
+        cfg = build_mongodb_connector_config(mongo_pipeline, PlatformConfig())
+        assert cfg["collection.include.list"] == "mydb.orders,mydb.customers"
+
+    def test_no_table_include_list_key(self, mongo_pipeline: PipelineConfig):
+        cfg = build_mongodb_connector_config(mongo_pipeline, PlatformConfig())
+        assert "table.include.list" not in cfg
+
+    def test_capture_mode_full_document(self, mongo_pipeline: PipelineConfig):
+        cfg = build_mongodb_connector_config(mongo_pipeline, PlatformConfig())
+        assert cfg["capture.mode"] == "change_streams_update_full"
+
+    def test_avro_converters(self, mongo_pipeline: PipelineConfig):
+        cfg = build_mongodb_connector_config(mongo_pipeline, PlatformConfig())
+        assert cfg["key.converter"] == "io.confluent.connect.avro.AvroConverter"
+        assert cfg["value.converter"] == "io.confluent.connect.avro.AvroConverter"
+
+    def test_topic_prefix(self, mongo_pipeline: PipelineConfig):
+        cfg = build_mongodb_connector_config(mongo_pipeline, PlatformConfig())
+        assert cfg["topic.prefix"] == "cdc"
+
+    def test_snapshot_mode(self, mongo_pipeline: PipelineConfig):
+        cfg = build_mongodb_connector_config(mongo_pipeline, PlatformConfig())
+        assert cfg["snapshot.mode"] == "initial"
+
+    def test_dispatch_to_mongodb(self, mongo_pipeline: PipelineConfig):
+        cfg = build_connector_config(mongo_pipeline, PlatformConfig())
+        assert "MongoDb" in cfg["connector.class"]
+
+    def test_custom_auth_source(self):
+        pipeline = PipelineConfig(
+            pipeline_id="test-mongo",
+            source=SourceConfig(
+                source_type=SourceType.MONGODB,
+                host="mongo-host",
+                port=27017,
+                database="mydb",
+                tables=["mydb.events"],
+                auth_source="mydb",
+            ),
+        )
+        cfg = build_mongodb_connector_config(pipeline, PlatformConfig())
+        assert "authSource=mydb" in cfg["mongodb.connection.string"]
+
+
+class TestSQLServerConnectorConfig:
+    @pytest.fixture
+    def sqlserver_pipeline(self) -> PipelineConfig:
+        return PipelineConfig(
+            pipeline_id="test-sqlserver",
+            source=SourceConfig(
+                source_type=SourceType.SQLSERVER,
+                host="sqlserver-host",
+                port=1433,
+                database="testdb",
+                username="sa",
+                password="secret",
+                tables=["dbo.customers", "sales.orders"],
+            ),
+        )
+
+    def test_connector_class(self, sqlserver_pipeline: PipelineConfig):
+        cfg = build_sqlserver_connector_config(sqlserver_pipeline, PlatformConfig())
+        assert cfg["connector.class"] == "io.debezium.connector.sqlserver.SqlServerConnector"
+
+    def test_host_and_port(self, sqlserver_pipeline: PipelineConfig):
+        cfg = build_sqlserver_connector_config(sqlserver_pipeline, PlatformConfig())
+        assert cfg["database.hostname"] == "sqlserver-host"
+        assert cfg["database.port"] == "1433"
+
+    def test_database_names(self, sqlserver_pipeline: PipelineConfig):
+        cfg = build_sqlserver_connector_config(sqlserver_pipeline, PlatformConfig())
+        assert cfg["database.names"] == "testdb"
+
+    def test_table_include_list(self, sqlserver_pipeline: PipelineConfig):
+        cfg = build_sqlserver_connector_config(sqlserver_pipeline, PlatformConfig())
+        assert cfg["table.include.list"] == "dbo.customers,sales.orders"
+
+    def test_schema_history_present(self, sqlserver_pipeline: PipelineConfig):
+        cfg = build_sqlserver_connector_config(sqlserver_pipeline, PlatformConfig())
+        assert "schema.history.internal.kafka.bootstrap.servers" in cfg
+        assert "schema.history.internal.kafka.topic" in cfg
+
+    def test_schema_history_topic_name(self, sqlserver_pipeline: PipelineConfig):
+        cfg = build_sqlserver_connector_config(sqlserver_pipeline, PlatformConfig())
+        assert cfg["schema.history.internal.kafka.topic"] == (
+            "_schema-history.cdc.test-sqlserver"
+        )
+
+    def test_avro_converters(self, sqlserver_pipeline: PipelineConfig):
+        cfg = build_sqlserver_connector_config(sqlserver_pipeline, PlatformConfig())
+        assert cfg["key.converter"] == "io.confluent.connect.avro.AvroConverter"
+        assert cfg["value.converter"] == "io.confluent.connect.avro.AvroConverter"
+
+    def test_decimal_handling(self, sqlserver_pipeline: PipelineConfig):
+        cfg = build_sqlserver_connector_config(sqlserver_pipeline, PlatformConfig())
+        assert cfg["decimal.handling.mode"] == "string"
+
+    def test_snapshot_mode(self, sqlserver_pipeline: PipelineConfig):
+        cfg = build_sqlserver_connector_config(sqlserver_pipeline, PlatformConfig())
+        assert cfg["snapshot.mode"] == "initial"
+
+    def test_dispatch_to_sqlserver(self, sqlserver_pipeline: PipelineConfig):
+        cfg = build_connector_config(sqlserver_pipeline, PlatformConfig())
+        assert "SqlServerConnector" in cfg["connector.class"]
 
 
 class TestDebeziumClient:

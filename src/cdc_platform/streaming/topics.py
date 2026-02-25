@@ -5,7 +5,7 @@ from __future__ import annotations
 import structlog
 from confluent_kafka.admin import AdminClient, NewTopic  # type: ignore[attr-defined]
 
-from cdc_platform.config.models import PipelineConfig, PlatformConfig
+from cdc_platform.config.models import PipelineConfig, PlatformConfig, SourceType
 
 logger = structlog.get_logger()
 
@@ -20,14 +20,41 @@ def dlq_topic_name(source_topic: str, suffix: str = "dlq") -> str:
     return f"{source_topic}.{suffix}"
 
 
+def _cdc_topic_for_entry(pipeline: PipelineConfig, qualified_name: str) -> str:
+    """Return the Debezium-generated topic name for one table/collection entry.
+
+    Topic naming varies by source type because Debezium embeds the database
+    name differently depending on the connector:
+
+    - PostgreSQL  ``<prefix>.<schema>.<table>``     e.g. ``cdc.public.customers``
+    - MySQL       ``<prefix>.<db>.<table>``          e.g. ``cdc.mydb.customers``
+    - MongoDB     ``<prefix>.<db>.<collection>``     e.g. ``cdc.mydb.events``
+    - SQL Server  ``<prefix>.<database>.<schema>.<table>``
+                                                     e.g. ``cdc.cdc_demo.dbo.customers``
+
+    PostgreSQL, MySQL, and MongoDB all use the 3-part form where the first
+    component of *qualified_name* (``schema`` / ``db``) is already the right
+    second segment.  SQL Server adds an extra level because Debezium 2.x
+    prepends ``database.names`` before the schema+table.
+    """
+    namespace, name = qualified_name.split(".")
+    src = pipeline.source
+
+    if src.source_type == SourceType.SQLSERVER:
+        # Debezium SqlServerConnector (v2.x): <prefix>.<database>.<schema>.<table>
+        return f"{pipeline.topic_prefix}.{src.database}.{namespace}.{name}"
+
+    # PostgreSQL / MySQL / MongoDB: <prefix>.<namespace>.<name>
+    return cdc_topic_name(pipeline.topic_prefix, namespace, name)
+
+
 def topics_for_pipeline(
     pipeline: PipelineConfig, platform: PlatformConfig
 ) -> list[str]:
     """Return all CDC + DLQ topics for a pipeline."""
     topics: list[str] = []
-    for table in pipeline.source.tables:
-        schema, tbl = table.split(".")
-        t = cdc_topic_name(pipeline.topic_prefix, schema, tbl)
+    for entry in pipeline.source.tables:
+        t = _cdc_topic_for_entry(pipeline, entry)
         topics.append(t)
         if platform.dlq.enabled:
             topics.append(dlq_topic_name(t, platform.dlq.topic_suffix))

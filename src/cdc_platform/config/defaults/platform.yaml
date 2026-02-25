@@ -12,6 +12,9 @@ kafka:
   acks: all
   topic_num_partitions: 1
   topic_replication_factor: 1
+  poll_batch_size: 1
+  deser_pool_size: 1
+  commit_interval_seconds: 0.0
 
 connector:
   connect_url: http://localhost:8083
@@ -24,6 +27,7 @@ dlq:
   topic_suffix: dlq
   max_retries: 3
   include_headers: true
+  flush_interval_seconds: 0.0
 
 retry:
   max_attempts: 5

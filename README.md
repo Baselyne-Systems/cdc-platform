@@ -52,6 +52,17 @@ The source database and sink destinations are the only components outside the pl
 - **CLI tooling** — validate configs, deploy connectors, check health, debug-consume, and run pipelines
 - **Observability** — structured logging (structlog), health probes, consumer lag metrics per partition
 
+## High-Throughput Mode
+
+The platform supports config-driven high-throughput tuning — batch polling, parallel deserialization, interval-based commits, and offloaded Iceberg writes. All new config fields default to values that preserve current behavior; operators opt into high-throughput mode by setting config values.
+
+See **[docs/scaling.md](docs/scaling.md)** for the full scaling guide, tuning knobs, capacity planning, and a pre-built high-throughput profile.
+
+**Quick start:**
+```bash
+cdc run pipeline.yaml --platform-config src/cdc_platform/config/defaults/platform-high-throughput.yaml
+```
+
 ## Deployment
 
 For production Kubernetes deployments, see **[docs/deployment.md](docs/deployment.md)** — covers the platform Helm chart, pipeline Docker images, health probes, configuration, and a production checklist.
@@ -246,6 +257,9 @@ When `transport_mode` is `kafka`, the `kafka` and `connector` sections are requi
 | `kafka.acks`                | `all`                   | Producer acknowledgment level            |
 | `kafka.topic_num_partitions` | `1`                    | Default partition count for auto-created topics |
 | `kafka.topic_replication_factor` | `1`                | Default replication factor for auto-created topics |
+| `kafka.poll_batch_size`      | `1`                     | Messages fetched per poll call. `1` = single-poll (current). Higher = batch poll. |
+| `kafka.deser_pool_size`      | `1`                     | Thread pool for parallel Avro deserialization. `1` = no pool. |
+| `kafka.commit_interval_seconds` | `0.0`               | `0.0` = per-event sync commit. `>0` = periodic async commit at this interval. |
 
 **Debezium connector** (`connector.*`) — Required when `transport_mode: kafka`. The platform deploys and manages the Debezium source connector via the Kafka Connect REST API.
 
@@ -275,6 +289,7 @@ When `transport_mode` is `kafka`, the `kafka` and `connector` sections are requi
 | `dlq.topic_suffix` | `dlq`   | Suffix appended to source topic for DLQ topic name |
 | `dlq.max_retries`  | `3`     | Max retries before routing to DLQ        |
 | `dlq.include_headers` | `true` | Include diagnostic headers on DLQ messages |
+| `dlq.flush_interval_seconds` | `0.0` | `0.0` = sync flush per DLQ message. `>0` = non-blocking produce with periodic flush. |
 
 ### Sink destinations (external)
 
@@ -296,6 +311,8 @@ Sinks are the external systems the platform writes to. Each sink is independentl
 | `maintenance.compaction_interval_seconds` | `7200.0` | Compaction poll interval |
 | `maintenance.compaction_file_threshold` | `10` | Min files before compaction triggers |
 | `maintenance.compaction_max_rows_per_batch` | `500000` | Safety limit per compaction pass |
+| `iceberg.flush_interval_seconds` | `0.0` | `0.0` = flush only at batch_size. `>0` = periodic flush for partial batches. |
+| `iceberg.write_executor_threads` | `0` | `0` = writes on event loop. `>0` = writes offloaded to thread pool. |
 
 ### Retry configuration
 

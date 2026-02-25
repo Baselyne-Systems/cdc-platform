@@ -20,6 +20,7 @@ class DLQHandler:
     def __init__(self, producer: Producer, config: DLQConfig | None = None) -> None:
         self._producer = producer
         self._config = config or DLQConfig()
+        self._flush_interval = self._config.flush_interval_seconds
 
     def send(
         self,
@@ -63,7 +64,10 @@ class DLQHandler:
                 value=value,
                 headers=kafka_headers,
             )
-            self._producer.flush(timeout=10)
+            if self._flush_interval <= 0:
+                self._producer.flush(timeout=10)
+            else:
+                self._producer.poll(0)
         except Exception as dlq_exc:
             logger.error(
                 "dlq.write_failed",
@@ -83,3 +87,7 @@ class DLQHandler:
             offset=offset,
             error=str(error),
         )
+
+    def flush(self, timeout: float = 30.0) -> None:
+        """Flush all pending DLQ messages. Called during pipeline shutdown."""
+        self._producer.flush(timeout=timeout)

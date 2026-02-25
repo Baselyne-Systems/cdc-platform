@@ -45,6 +45,10 @@ class Pipeline:
         self._monitor: SourceMonitor | None = None
         self._health_server: HealthServer | None = None
         self._queue_monitor_task: asyncio.Task[None] | None = None
+        self._commit_interval: float = (
+            platform.kafka.commit_interval_seconds if platform.kafka else 0.0
+        )
+        self._commit_task: asyncio.Task[None] | None = None
 
     def start(self) -> None:
         """Start the full pipeline (blocking)."""
@@ -89,13 +93,17 @@ class Pipeline:
         # 7. Start queue depth monitor
         self._queue_monitor_task = asyncio.create_task(self._monitor_queue_depth())
 
+        # 8. Start periodic commit loop (if interval-based commits enabled)
+        if self._commit_interval > 0:
+            self._commit_task = asyncio.create_task(self._periodic_commit_loop())
+
         logger.info(
             "pipeline.started",
             pipeline_id=self._pipeline.pipeline_id,
             sinks=[s.sink_id for s in self._sinks],
         )
 
-        # 8. Consume — polls transport, enqueues to partition queues
+        # 9. Consume — polls transport, enqueues to partition queues
         try:
             await self._source.start(
                 handler=self._enqueue,
@@ -140,6 +148,12 @@ class Pipeline:
                 )
             finally:
                 queue.task_done()
+
+    async def _periodic_commit_loop(self) -> None:
+        """Periodically commit watermark offsets instead of per-event."""
+        while True:
+            await asyncio.sleep(self._commit_interval)
+            self._maybe_commit_watermark()
 
     async def _monitor_queue_depth(self) -> None:
         """Periodically log per-partition queue depth for observability."""
@@ -214,10 +228,15 @@ class Pipeline:
                     )
 
         await asyncio.gather(*[_write_to_sink(s) for s in self._sinks])
-        self._maybe_commit_watermark()
+        if self._commit_interval <= 0:
+            self._maybe_commit_watermark()
 
     async def _shutdown(self) -> None:
         """Stop health server, monitors, drain workers, flush sinks."""
+        if self._commit_task:
+            self._commit_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._commit_task
         if self._queue_monitor_task:
             self._queue_monitor_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -254,6 +273,13 @@ class Pipeline:
                 await worker
         self._partition_workers.clear()
         self._partition_queues.clear()
+
+        # Flush error router (DLQ) pending messages
+        if self._error_router is not None and hasattr(self._error_router, "flush"):
+            try:
+                self._error_router.flush()
+            except Exception as exc:
+                logger.error("pipeline.error_router_flush_failed", error=str(exc))
 
         await self._stop_sinks()
 

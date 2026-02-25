@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import signal
 from collections.abc import Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import structlog
@@ -56,6 +57,16 @@ class CDCConsumer:
         self._kafka_config = kafka_config
         self._running = False
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._poll_batch_size = kafka_config.poll_batch_size
+        self._commit_async = kafka_config.commit_interval_seconds > 0
+
+        # Thread pool for parallel deserialization
+        deser_pool_size = kafka_config.deser_pool_size
+        self._deser_executor: ThreadPoolExecutor | None = (
+            ThreadPoolExecutor(max_workers=deser_pool_size)
+            if deser_pool_size > 1
+            else None
+        )
 
         registry = SchemaRegistryClient({"url": kafka_config.schema_registry_url})
         self._key_deser = AvroDeserializer(registry)
@@ -107,6 +118,16 @@ class CDCConsumer:
             tps = [(tp.topic, tp.partition) for tp in partitions]
             self._loop.call_soon_threadsafe(self._on_revoke, tps)
 
+    def _deserialize_batch(
+        self, messages: list[Message]
+    ) -> list[tuple[dict[str, Any] | None, dict[str, Any] | None, Message]]:
+        """Deserialize a batch of messages (synchronous, runs in thread pool)."""
+        results: list[tuple[dict[str, Any] | None, dict[str, Any] | None, Message]] = []
+        for msg in messages:
+            key, value = self._deserialize(msg)
+            results.append((key, value, msg))
+        return results
+
     async def consume(self, *, poll_timeout: float = 1.0) -> None:
         """Async consume loop — polls in a thread, awaits async handler."""
         self._running = True
@@ -121,27 +142,75 @@ class CDCConsumer:
         loop = asyncio.get_running_loop()
         logger.info("consumer.started", topics=self._topics)
         try:
-            while self._running:
-                polled_message = await loop.run_in_executor(
-                    None, self._consumer.poll, poll_timeout
-                )
-                if polled_message is None:
-                    continue
+            if self._poll_batch_size > 1:
+                await self._consume_batch(loop, poll_timeout)
+            else:
+                await self._consume_single(loop, poll_timeout)
+        finally:
+            if self._deser_executor is not None:
+                self._deser_executor.shutdown(wait=False)
+            self._consumer.close()
+            logger.info("consumer.stopped")
 
-                err = polled_message.error()
+    async def _consume_single(
+        self, loop: asyncio.AbstractEventLoop, poll_timeout: float
+    ) -> None:
+        """Legacy single-message poll path."""
+        while self._running:
+            polled_message = await loop.run_in_executor(
+                None, self._consumer.poll, poll_timeout
+            )
+            if polled_message is None:
+                continue
+
+            err = polled_message.error()
+            if err and err.code() == KafkaError._PARTITION_EOF:  # type: ignore[attr-defined]
+                continue
+            if err:
+                raise KafkaException(err)
+
+            try:
+                key, value = self._deserialize(polled_message)
+                await self._handler(key, value, polled_message)
+            except Exception as exc:
+                self._handle_error(polled_message, exc)
+
+    async def _consume_batch(
+        self, loop: asyncio.AbstractEventLoop, poll_timeout: float
+    ) -> None:
+        """Batch poll path — fetches N messages per poll, parallel deser."""
+        batch_size = self._poll_batch_size
+        while self._running:
+            messages = await loop.run_in_executor(
+                None, self._consumer.consume, batch_size, poll_timeout
+            )
+            if not messages:
+                continue
+
+            # Filter errors and EOF
+            valid: list[Message] = []
+            for msg in messages:
+                err = msg.error()
                 if err and err.code() == KafkaError._PARTITION_EOF:  # type: ignore[attr-defined]
                     continue
                 if err:
                     raise KafkaException(err)
+                valid.append(msg)
 
+            if not valid:
+                continue
+
+            # Deserialize batch (in thread pool if configured)
+            deserialized = await loop.run_in_executor(
+                self._deser_executor, self._deserialize_batch, valid
+            )
+
+            # Dispatch to handler one at a time (preserves handler contract)
+            for key, value, msg in deserialized:
                 try:
-                    key, value = self._deserialize(polled_message)
-                    await self._handler(key, value, polled_message)
+                    await self._handler(key, value, msg)
                 except Exception as exc:
-                    self._handle_error(polled_message, exc)
-        finally:
-            self._consumer.close()
-            logger.info("consumer.stopped")
+                    self._handle_error(msg, exc)
 
     def _install_signal_handlers(self) -> None:
         def _shutdown(signum: int, frame: Any) -> None:
@@ -201,7 +270,9 @@ class CDCConsumer:
             for (topic, partition), offset in offsets.items()
         ]
         if topic_partitions:
-            self._consumer.commit(offsets=topic_partitions, asynchronous=False)
+            self._consumer.commit(
+                offsets=topic_partitions, asynchronous=self._commit_async
+            )
 
     def stop(self) -> None:
         """Signal the consume loop to stop."""

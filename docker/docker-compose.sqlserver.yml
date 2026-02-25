@@ -1,0 +1,52 @@
+# SQL Server CDC source services.
+# Extends the base docker-compose.yml with a SQL Server 2022 Developer instance.
+#
+# Usage:
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.sqlserver.yml up -d
+#
+# Prerequisites on the SQL Server side (handled by sqlserver-init):
+#   - EXEC sys.sp_cdc_enable_db            -- enable CDC on the database
+#   - EXEC sys.sp_cdc_enable_table (...)   -- enable CDC on each table
+#   - SQL Server Agent must be running     -- manages CDC capture/cleanup jobs
+
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: cdc-sqlserver
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Cdc_Password1!"
+      MSSQL_AGENT_ENABLED: "true"
+      MSSQL_PID: Developer
+    ports:
+      - "1433:1433"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - >
+          /opt/mssql-tools18/bin/sqlcmd
+          -S localhost -U sa -P 'Cdc_Password1!'
+          -Q 'SELECT 1' -No -b
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+  # One-shot container: runs init.sql to enable CDC and seed test data.
+  sqlserver-init:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: cdc-sqlserver-init
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    environment:
+      ACCEPT_EULA: "Y"
+    volumes:
+      - ./sqlserver/init.sql:/init.sql:ro
+    entrypoint:
+      - "bash"
+      - "-c"
+      - >
+        /opt/mssql-tools18/bin/sqlcmd
+        -S sqlserver -U sa -P 'Cdc_Password1!'
+        -i /init.sql -No -b

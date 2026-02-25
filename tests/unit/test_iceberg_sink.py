@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -387,3 +389,162 @@ class TestIcebergSink:
             await sink.flush()
 
         assert sink.flushed_offsets == {}
+
+
+@pytest.mark.asyncio
+class TestIcebergHighThroughput:
+    async def test_no_executor_when_threads_eq0(self):
+        sink = _make_sink()
+        assert sink._write_executor is None
+
+    async def test_executor_created_when_threads_gt0(self):
+        cfg = SinkConfig(
+            sink_id="test-iceberg",
+            sink_type=SinkType.ICEBERG,
+            iceberg=IcebergSinkConfig(
+                catalog_uri="sqlite:////tmp/cat.db",
+                warehouse="file:///tmp/wh",
+                table_name="test_table",
+                write_executor_threads=2,
+            ),
+        )
+        sink = IcebergSink(cfg)
+        mock_catalog = MagicMock()
+        mock_table = MagicMock()
+        mock_catalog.load_table.return_value = mock_table
+
+        with patch("cdc_platform.sinks.iceberg.load_catalog", create=True) as mock_load:
+            mock_load.return_value = mock_catalog
+            with patch.dict(
+                "sys.modules",
+                {
+                    "pyiceberg": MagicMock(),
+                    "pyiceberg.catalog": MagicMock(load_catalog=mock_load),
+                },
+            ):
+                await sink.start()
+
+        assert sink._write_executor is not None
+        await sink.stop()
+
+    async def test_flush_uses_executor_when_configured(self):
+        cfg = SinkConfig(
+            sink_id="test-iceberg",
+            sink_type=SinkType.ICEBERG,
+            iceberg=IcebergSinkConfig(
+                catalog_uri="sqlite:////tmp/cat.db",
+                warehouse="file:///tmp/wh",
+                table_name="test_table",
+                write_executor_threads=2,
+                batch_size=10,
+            ),
+        )
+        sink = IcebergSink(cfg)
+        sink._catalog = MagicMock()
+        mock_table = MagicMock()
+        sink._table = mock_table
+        from concurrent.futures import ThreadPoolExecutor
+
+        sink._write_executor = ThreadPoolExecutor(max_workers=1)
+
+        mock_pa = MagicMock()
+        mock_arrow_table = MagicMock()
+        mock_pa.Table.from_pylist.return_value = mock_arrow_table
+
+        await sink.write(key=None, value={"x": 1}, topic="t", partition=0, offset=1)
+
+        with patch.dict("sys.modules", {"pyarrow": mock_pa}):
+            await sink.flush()
+
+        # The write should have happened (via executor)
+        mock_table.append.assert_called_once_with(mock_arrow_table)
+        sink._write_executor.shutdown(wait=False)
+
+    async def test_periodic_flush_starts_when_interval_gt0(self):
+        cfg = SinkConfig(
+            sink_id="test-iceberg",
+            sink_type=SinkType.ICEBERG,
+            iceberg=IcebergSinkConfig(
+                catalog_uri="sqlite:////tmp/cat.db",
+                warehouse="file:///tmp/wh",
+                table_name="test_table",
+                flush_interval_seconds=0.05,
+            ),
+        )
+        sink = IcebergSink(cfg)
+        mock_catalog = MagicMock()
+        mock_table = MagicMock()
+        mock_catalog.load_table.return_value = mock_table
+
+        with patch("cdc_platform.sinks.iceberg.load_catalog", create=True) as mock_load:
+            mock_load.return_value = mock_catalog
+            with patch.dict(
+                "sys.modules",
+                {
+                    "pyiceberg": MagicMock(),
+                    "pyiceberg.catalog": MagicMock(load_catalog=mock_load),
+                },
+            ):
+                await sink.start()
+
+        assert sink._flush_task is not None
+        assert not sink._flush_task.done()
+        await sink.stop()
+
+    async def test_stop_cancels_flush_task(self):
+        cfg = SinkConfig(
+            sink_id="test-iceberg",
+            sink_type=SinkType.ICEBERG,
+            iceberg=IcebergSinkConfig(
+                catalog_uri="sqlite:////tmp/cat.db",
+                warehouse="file:///tmp/wh",
+                table_name="test_table",
+                flush_interval_seconds=60.0,
+            ),
+        )
+        sink = IcebergSink(cfg)
+        sink._catalog = MagicMock()
+        sink._table = MagicMock()
+        # Manually create a flush task
+        sink._flush_task = asyncio.create_task(sink._periodic_flush_loop())
+
+        await sink.stop()
+
+        assert sink._flush_task is None
+
+    async def test_periodic_flush_flushes_partial_batch(self):
+        cfg = SinkConfig(
+            sink_id="test-iceberg",
+            sink_type=SinkType.ICEBERG,
+            iceberg=IcebergSinkConfig(
+                catalog_uri="sqlite:////tmp/cat.db",
+                warehouse="file:///tmp/wh",
+                table_name="test_table",
+                batch_size=1000,
+                flush_interval_seconds=0.05,
+            ),
+        )
+        sink = IcebergSink(cfg)
+        sink._catalog = MagicMock()
+        mock_table = MagicMock()
+        sink._table = mock_table
+
+        mock_pa = MagicMock()
+        mock_pa.Table.from_pylist.return_value = MagicMock()
+
+        # Write a partial batch (well under batch_size)
+        await sink.write(key=None, value={"x": 1}, topic="t", partition=0, offset=1)
+        assert len(sink._buffer) == 1
+
+        # Start the periodic flush
+        with patch.dict("sys.modules", {"pyarrow": mock_pa}):
+            sink._flush_task = asyncio.create_task(sink._periodic_flush_loop())
+            await asyncio.sleep(0.1)
+
+        # Partial batch should have been flushed
+        mock_table.append.assert_called()
+        assert len(sink._buffer) == 0
+
+        sink._flush_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await sink._flush_task

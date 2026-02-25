@@ -11,6 +11,13 @@ kafka:
   schema_registry_url: http://registry-prod:8081
   topic_num_partitions: 6
   topic_replication_factor: 3
+  # High-throughput tuning (defaults preserve current behavior)
+  # poll_batch_size: 500        # Batch N messages per poll (1 = single-poll)
+  # deser_pool_size: 4          # Thread pool for parallel Avro deser (1 = no pool)
+  # commit_interval_seconds: 5.0  # Periodic async commits (0.0 = per-event sync)
 
 connector:
   connect_url: http://connect-prod:8083
+
+# dlq:
+#   flush_interval_seconds: 5.0  # Non-blocking DLQ produces (0.0 = sync flush)

@@ -1,0 +1,40 @@
+# MongoDB CDC source services.
+# Extends the base docker-compose.yml with a single-node MongoDB replica set.
+#
+# Usage:
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.mongodb.yml up -d
+#
+# MongoDB change streams require a replica set.  A single-node set is
+# sufficient for development / integration testing.
+
+services:
+  mongodb:
+    image: mongo:7
+    container_name: cdc-mongodb
+    # --replSet is required for change streams (which Debezium uses)
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test:
+        - "CMD"
+        - "mongosh"
+        - "--quiet"
+        - "--eval"
+        - "db.adminCommand({ping:1}).ok"
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 10s
+
+  # One-shot container: initialises the replica set and seeds test data.
+  # Exits with code 0 on success; Docker Compose will not restart it.
+  mongodb-setup:
+    image: mongo:7
+    container_name: cdc-mongodb-setup
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    volumes:
+      - ./mongodb/setup.sh:/setup.sh:ro
+    entrypoint: ["bash", "/setup.sh"]

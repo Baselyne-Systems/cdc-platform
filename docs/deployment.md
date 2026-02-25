@@ -447,6 +447,9 @@ kafka:                             # Required when transport_mode: kafka
   acks: all
   topic_num_partitions: 1          # Partition count for auto-created topics
   topic_replication_factor: 1      # Replication factor for auto-created topics
+  poll_batch_size: 1               # Messages per poll (1 = single-poll, >1 = batch)
+  deser_pool_size: 1               # Thread pool for parallel Avro deser (1 = no pool)
+  commit_interval_seconds: 0.0     # 0.0 = per-event sync commit, >0 = periodic async
 
 connector:
   connect_url: http://localhost:8083
@@ -459,6 +462,7 @@ dlq:
   topic_suffix: dlq
   max_retries: 3
   include_headers: true
+  flush_interval_seconds: 0.0      # 0.0 = sync flush per msg, >0 = non-blocking
 
 retry:
   max_attempts: 5
@@ -535,6 +539,9 @@ cdc run pipeline.yaml
 - [ ] Resource requests and limits set based on workload
 - [ ] `max_buffered_messages` tuned for memory vs throughput tradeoff
 - [ ] Consumer lag monitored and alerted on
+- [ ] For high-throughput: `poll_batch_size`, `deser_pool_size`, `commit_interval_seconds` tuned (see [docs/scaling.md](scaling.md))
+- [ ] For Iceberg high-throughput: `write_executor_threads`, `flush_interval_seconds` tuned
+- [ ] `commit_interval_seconds` tradeoff understood (redelivery window on crash)
 
 ### Backup & Recovery
 - [ ] Iceberg time-travel enabled for point-in-time recovery

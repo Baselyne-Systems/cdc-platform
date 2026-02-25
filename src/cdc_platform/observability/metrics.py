@@ -25,13 +25,24 @@ def get_consumer_lag(
     group_id: str,
     topics: list[str],
 ) -> list[PartitionLag]:
-    """Query consumer group lag for the given topics."""
+    """Query consumer group lag without joining the main consumer group.
+
+    Uses AdminClient to fetch committed offsets for the real group.id,
+    and a separate Consumer with an isolated group.id only for
+    get_watermark_offsets() (metadata call, never joins the main group).
+    """
+    from confluent_kafka import TopicPartition
+    from confluent_kafka.admin import AdminClient
+
+    admin = AdminClient({"bootstrap.servers": bootstrap_servers})
+
+    # Use an isolated consumer only for watermark offset queries
     from confluent_kafka import Consumer
 
-    consumer = Consumer(
+    lag_consumer = Consumer(
         {
             "bootstrap.servers": bootstrap_servers,
-            "group.id": group_id,
+            "group.id": f"__cdc_lag_monitor_{group_id}",
             "enable.auto.commit": False,
         }
     )
@@ -39,30 +50,35 @@ def get_consumer_lag(
     results: list[PartitionLag] = []
     try:
         for topic in topics:
-            meta = consumer.list_topics(topic=topic, timeout=5)
+            meta = lag_consumer.list_topics(topic=topic, timeout=5)
             partitions = meta.topics.get(topic)
             if not partitions:
                 continue
 
-            from confluent_kafka import TopicPartition
-
             tps = [TopicPartition(topic, p) for p in partitions.partitions]
-            committed = consumer.committed(tps, timeout=5)
 
-            for tp in committed:
-                _, hi = consumer.get_watermark_offsets(tp, timeout=5)
-                current = tp.offset if tp.offset >= 0 else 0
+            # Query committed offsets for the real group via AdminClient
+            futures = admin.list_consumer_group_offsets(
+                [{"group": group_id, "partitions": tps}]
+            )
+            # list_consumer_group_offsets returns {group_id: future}
+            group_future = futures[group_id]
+            committed_tps = group_future.result()
+
+            for tp_result in committed_tps:
+                _, hi = lag_consumer.get_watermark_offsets(tp_result, timeout=5)
+                current = tp_result.offset if tp_result.offset >= 0 else 0
                 results.append(
                     PartitionLag(
-                        topic=tp.topic,
-                        partition=tp.partition,
+                        topic=tp_result.topic,
+                        partition=tp_result.partition,
                         current_offset=current,
                         high_watermark=hi,
                         lag=hi - current,
                     )
                 )
     finally:
-        consumer.close()
+        lag_consumer.close()
 
     return results
 

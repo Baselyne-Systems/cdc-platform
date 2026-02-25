@@ -114,3 +114,48 @@ class TestDLQHandler:
             call_kwargs = mock_logger.error.call_args.kwargs
             assert call_kwargs["dlq_error"] == "broker down"
             assert call_kwargs["original_error"] == "bad data"
+
+
+class TestDLQAsyncFlush:
+    def test_sync_flush_when_interval_eq0(self):
+        """Default behavior: synchronous flush after each produce."""
+        producer = MagicMock()
+        handler = DLQHandler(producer, DLQConfig(flush_interval_seconds=0.0))
+
+        handler.send(
+            source_topic="t",
+            partition=0,
+            offset=0,
+            key=None,
+            value=None,
+            error=ValueError("err"),
+        )
+
+        producer.flush.assert_called_once_with(timeout=10)
+        producer.poll.assert_not_called()
+
+    def test_poll_when_interval_gt0(self):
+        """When flush_interval > 0, use poll(0) instead of sync flush."""
+        producer = MagicMock()
+        handler = DLQHandler(producer, DLQConfig(flush_interval_seconds=5.0))
+
+        handler.send(
+            source_topic="t",
+            partition=0,
+            offset=0,
+            key=None,
+            value=None,
+            error=ValueError("err"),
+        )
+
+        producer.poll.assert_called_once_with(0)
+        producer.flush.assert_not_called()
+
+    def test_explicit_flush_drains_pending(self):
+        """Explicit flush() calls producer.flush for shutdown."""
+        producer = MagicMock()
+        handler = DLQHandler(producer, DLQConfig(flush_interval_seconds=5.0))
+
+        handler.flush(timeout=15.0)
+
+        producer.flush.assert_called_once_with(timeout=15.0)

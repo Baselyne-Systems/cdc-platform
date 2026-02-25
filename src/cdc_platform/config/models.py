@@ -20,6 +20,8 @@ class SourceType(StrEnum):
 
     POSTGRES = "postgres"
     MYSQL = "mysql"
+    MONGODB = "mongodb"
+    SQLSERVER = "sqlserver"
 
 
 class SnapshotMode(StrEnum):
@@ -32,28 +34,60 @@ class SnapshotMode(StrEnum):
 
 
 class SourceConfig(BaseModel):
-    """Configuration for a CDC source database."""
+    """Configuration for a CDC source database.
+
+    Common fields apply to all source types.  Source-specific fields are
+    optional and ignored when they don't apply to the selected source_type:
+
+    - PostgreSQL: slot_name, publication_name
+    - MySQL:      mysql_server_id
+    - MongoDB:    replica_set_name, auth_source
+    - SQL Server: (uses common fields only; CDC must be pre-enabled on the DB)
+    """
 
     source_type: SourceType = SourceType.POSTGRES
     host: str = "localhost"
+    # Default port is for PostgreSQL; set explicitly for other source types:
+    # MySQL → 3306, MongoDB → 27017, SQL Server → 1433
     port: int = 5432
     database: str
     username: str = "cdc_user"
     password: SecretStr = SecretStr("cdc_password")
+    # For RDBMS sources: schema-qualified table names (e.g. "public.customers").
+    # For MongoDB: database-qualified collection names (e.g. "mydb.events").
     tables: list[str] = Field(default_factory=list)
+    snapshot_mode: SnapshotMode = SnapshotMode.INITIAL
+
+    # -- PostgreSQL-specific ---------------------------------------------------
     slot_name: str = "cdc_slot"
     publication_name: str = "cdc_publication"
-    snapshot_mode: SnapshotMode = SnapshotMode.INITIAL
+
+    # -- MySQL-specific --------------------------------------------------------
+    # Must be unique across all MySQL servers in the replication topology.
+    mysql_server_id: int = Field(default=1, ge=1)
+
+    # -- MongoDB-specific ------------------------------------------------------
+    # Replica set name (e.g. "rs0").  Leave None for standalone / Atlas clusters
+    # that embed the replica set in the connection string.
+    replica_set_name: str | None = None
+    # MongoDB database used to authenticate the CDC user (default: "admin").
+    auth_source: str = "admin"
 
     @field_validator("tables")
     @classmethod
-    def validate_schema_qualified_tables(cls, v: list[str]) -> list[str]:
+    def validate_qualified_names(cls, v: list[str]) -> list[str]:
+        """Validate that table/collection names are schema- or db-qualified.
+
+        Accepted format: ``<namespace>.<name>`` where both parts start with a
+        letter or underscore and contain only word characters.  This covers
+        ``public.customers`` (RDBMS) and ``mydb.events`` (MongoDB) alike.
+        """
         pattern = re.compile(r"^[a-zA-Z_]\w*\.[a-zA-Z_]\w*$")
         for table in v:
             if not pattern.match(table):
                 msg = (
-                    f"Table '{table}' must be schema-qualified "
-                    f"(e.g. 'public.customers')"
+                    f"Table/collection '{table}' must be schema- or "
+                    f"db-qualified (e.g. 'public.customers' or 'mydb.events')"
                 )
                 raise ValueError(msg)
         return v
@@ -75,6 +109,10 @@ class KafkaConfig(BaseModel):
     max_poll_interval_ms: int = Field(default=300000, ge=1000)
     fetch_min_bytes: int = Field(default=1, ge=1)
     fetch_max_wait_ms: int = Field(default=500, ge=0)
+    # High-throughput tuning
+    poll_batch_size: int = Field(default=1, ge=1)
+    deser_pool_size: int = Field(default=1, ge=1)
+    commit_interval_seconds: float = Field(default=0.0, ge=0.0)
 
 
 class ConnectorConfig(BaseModel):
@@ -93,6 +131,7 @@ class DLQConfig(BaseModel):
     topic_suffix: str = Field(default="dlq", min_length=1)
     max_retries: int = Field(default=3, ge=0)
     include_headers: bool = True
+    flush_interval_seconds: float = Field(default=0.0, ge=0.0)
 
 
 class RetryConfig(BaseModel):
@@ -179,6 +218,9 @@ class IcebergSinkConfig(BaseModel):
     s3_secret_access_key: SecretStr | None = None
     s3_region: str = "us-east-1"
     maintenance: TableMaintenanceConfig = TableMaintenanceConfig()
+    # High-throughput tuning
+    flush_interval_seconds: float = Field(default=0.0, ge=0.0)
+    write_executor_threads: int = Field(default=0, ge=0)
 
 
 class SinkConfig(BaseModel):

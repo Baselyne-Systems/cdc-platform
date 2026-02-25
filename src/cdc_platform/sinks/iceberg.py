@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import structlog
@@ -29,6 +30,8 @@ class IcebergSink:
         self._flushed_offsets: dict[tuple[str, int], int] = {}
         self._maintenance_monitor: Any = None
         self._write_lock: asyncio.Lock = asyncio.Lock()
+        self._write_executor: ThreadPoolExecutor | None = None
+        self._flush_task: asyncio.Task[None] | None = None
 
     @property
     def sink_id(self) -> str:
@@ -97,6 +100,16 @@ class IcebergSink:
                 write_lock=self._write_lock,
             )
             await self._maintenance_monitor.start()
+
+        # High-throughput: thread pool for blocking Iceberg writes
+        if self._ice_config.write_executor_threads > 0:
+            self._write_executor = ThreadPoolExecutor(
+                max_workers=self._ice_config.write_executor_threads
+            )
+
+        # High-throughput: periodic flush for partial batches
+        if self._ice_config.flush_interval_seconds > 0:
+            self._flush_task = asyncio.create_task(self._periodic_flush_loop())
 
         logger.info("iceberg_sink.started", sink_id=self.sink_id)
 
@@ -169,10 +182,21 @@ class IcebergSink:
 
         t0 = time.monotonic()
         async with self._write_lock:
-            if cfg.write_mode == "upsert":
-                self._table.upsert(arrow_table)
+            if self._write_executor is not None:
+                loop = asyncio.get_running_loop()
+                if cfg.write_mode == "upsert":
+                    await loop.run_in_executor(
+                        self._write_executor, self._table.upsert, arrow_table
+                    )
+                else:
+                    await loop.run_in_executor(
+                        self._write_executor, self._table.append, arrow_table
+                    )
             else:
-                self._table.append(arrow_table)
+                if cfg.write_mode == "upsert":
+                    self._table.upsert(arrow_table)
+                else:
+                    self._table.append(arrow_table)
         elapsed_ms = (time.monotonic() - t0) * 1000
 
         for row in batch:
@@ -187,11 +211,31 @@ class IcebergSink:
             latency_ms=round(elapsed_ms, 2),
         )
 
+    async def _periodic_flush_loop(self) -> None:
+        """Flush partial batches on a timer to prevent data staleness."""
+        interval = self._ice_config.flush_interval_seconds
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self.flush()
+            except Exception:
+                logger.exception(
+                    "iceberg_sink.periodic_flush_error", sink_id=self.sink_id
+                )
+
     async def stop(self) -> None:
+        if self._flush_task is not None:
+            self._flush_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._flush_task
+            self._flush_task = None
         if self._maintenance_monitor is not None:
             await self._maintenance_monitor.stop()
             self._maintenance_monitor = None
         await self.flush()
+        if self._write_executor is not None:
+            self._write_executor.shutdown(wait=False)
+            self._write_executor = None
         self._catalog = None
         self._table = None
         logger.info("iceberg_sink.stopped", sink_id=self.sink_id)

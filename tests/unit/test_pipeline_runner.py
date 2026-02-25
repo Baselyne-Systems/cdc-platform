@@ -27,8 +27,12 @@ def _make_pipeline(*sink_cfgs: SinkConfig) -> PipelineConfig:
     )
 
 
-def _make_platform() -> PlatformConfig:
-    return PlatformConfig()
+def _make_platform(**kafka_overrides: object) -> PlatformConfig:
+    from cdc_platform.config.models import KafkaConfig
+
+    kafka_kwargs = {}
+    kafka_kwargs.update(kafka_overrides)
+    return PlatformConfig(kafka=KafkaConfig(**kafka_kwargs))
 
 
 def _webhook_sink_config(sink_id: str = "wh1", enabled: bool = True) -> SinkConfig:
@@ -399,3 +403,98 @@ class TestGracefulShutdown:
         sink.write.assert_awaited_once()
         assert len(pipeline._partition_queues) == 0
         assert len(pipeline._partition_workers) == 0
+
+
+@pytest.mark.asyncio
+class TestPeriodicCommit:
+    async def test_dispatch_skips_commit_when_interval_gt0(self):
+        """When commit_interval > 0, _dispatch_to_sinks should not commit."""
+        config = _make_pipeline(_webhook_sink_config("wh1"))
+        pipeline = Pipeline(config, _make_platform(commit_interval_seconds=5.0))
+
+        mock_source = MagicMock()
+        pipeline._source = mock_source
+
+        sink = _mock_sink("wh1", {("t", 0): 10})
+        pipeline._sinks = [sink]
+
+        event = _make_event()
+        await pipeline._dispatch_to_sinks(event)
+
+        # Should NOT have committed (periodic task handles it)
+        mock_source.commit_offsets.assert_not_called()
+
+    async def test_dispatch_commits_when_interval_eq0(self):
+        """When commit_interval == 0 (default), per-event commit happens."""
+        config = _make_pipeline(_webhook_sink_config("wh1"))
+        pipeline = Pipeline(config, _make_platform(commit_interval_seconds=0.0))
+
+        mock_source = MagicMock()
+        pipeline._source = mock_source
+
+        sink = _mock_sink("wh1", {("t", 0): 10})
+        pipeline._sinks = [sink]
+
+        event = _make_event()
+        await pipeline._dispatch_to_sinks(event)
+
+        mock_source.commit_offsets.assert_called_once()
+
+    async def test_periodic_commit_loop_fires(self):
+        """Periodic commit loop calls _maybe_commit_watermark."""
+        config = _make_pipeline(_webhook_sink_config("wh1"))
+        pipeline = Pipeline(config, _make_platform(commit_interval_seconds=0.05))
+
+        mock_source = MagicMock()
+        pipeline._source = mock_source
+
+        sink = _mock_sink("wh1", {("t", 0): 10})
+        pipeline._sinks = [sink]
+
+        task = asyncio.create_task(pipeline._periodic_commit_loop())
+        await asyncio.sleep(0.1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        mock_source.commit_offsets.assert_called()
+
+    async def test_shutdown_cancels_commit_task(self):
+        """Shutdown cancels the periodic commit task."""
+        config = _make_pipeline(_webhook_sink_config("wh1"))
+        pipeline = Pipeline(config, _make_platform(commit_interval_seconds=5.0))
+
+        pipeline._commit_task = asyncio.create_task(pipeline._periodic_commit_loop())
+        pipeline._sinks = []
+
+        await pipeline._shutdown()
+
+        assert pipeline._commit_task.cancelled()
+
+    async def test_final_commit_still_happens_on_stop(self):
+        """_stop_sinks still does a final commit regardless of interval."""
+        config = _make_pipeline(_webhook_sink_config("wh1"))
+        pipeline = Pipeline(config, _make_platform(commit_interval_seconds=5.0))
+
+        mock_source = MagicMock()
+        pipeline._source = mock_source
+
+        sink = _mock_sink("wh1", {("t", 0): 99})
+        pipeline._sinks = [sink]
+
+        await pipeline._stop_sinks()
+
+        mock_source.commit_offsets.assert_called_once_with({("t", 0): 99})
+
+    async def test_shutdown_flushes_error_router(self):
+        """Shutdown calls flush on the error router if available."""
+        config = _make_pipeline(_webhook_sink_config("wh1"))
+        pipeline = Pipeline(config, _make_platform())
+
+        mock_router = MagicMock()
+        pipeline._error_router = mock_router
+        pipeline._sinks = []
+
+        await pipeline._shutdown()
+
+        mock_router.flush.assert_called_once()

@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from cdc_platform.config.models import (
     DLQConfig,
+    IcebergSinkConfig,
     KafkaConfig,
     PipelineConfig,
     PlatformConfig,
@@ -29,7 +30,7 @@ class TestSourceConfig:
         assert len(cfg.tables) == 2
 
     def test_invalid_table_name_raises(self):
-        with pytest.raises(ValidationError, match="schema-qualified"):
+        with pytest.raises(ValidationError, match="qualified"):
             SourceConfig(database="mydb", tables=["customers"])
 
     def test_password_is_secret(self):
@@ -38,6 +39,128 @@ class TestSourceConfig:
         assert "s3cret" not in str(cfg)
         assert "s3cret" not in repr(cfg)
         assert "s3cret" not in cfg.model_dump_json()
+
+
+class TestMongoDBSourceConfig:
+    def test_defaults(self):
+        cfg = SourceConfig(source_type=SourceType.MONGODB, database="mydb")
+        assert cfg.source_type == SourceType.MONGODB
+        assert cfg.auth_source == "admin"
+        assert cfg.replica_set_name is None
+
+    def test_custom_port(self):
+        cfg = SourceConfig(
+            source_type=SourceType.MONGODB,
+            database="mydb",
+            host="mongo-host",
+            port=27017,
+        )
+        assert cfg.port == 27017
+        assert cfg.host == "mongo-host"
+
+    def test_replica_set_name(self):
+        cfg = SourceConfig(
+            source_type=SourceType.MONGODB,
+            database="mydb",
+            replica_set_name="rs0",
+        )
+        assert cfg.replica_set_name == "rs0"
+
+    def test_custom_auth_source(self):
+        cfg = SourceConfig(
+            source_type=SourceType.MONGODB,
+            database="mydb",
+            auth_source="mydb",
+        )
+        assert cfg.auth_source == "mydb"
+
+    def test_valid_db_qualified_collections(self):
+        cfg = SourceConfig(
+            source_type=SourceType.MONGODB,
+            database="mydb",
+            tables=["mydb.orders", "mydb.customers"],
+        )
+        assert len(cfg.tables) == 2
+
+    def test_unqualified_collection_raises(self):
+        with pytest.raises(ValidationError, match="qualified"):
+            SourceConfig(
+                source_type=SourceType.MONGODB,
+                database="mydb",
+                tables=["orders"],
+            )
+
+    def test_password_is_secret(self):
+        cfg = SourceConfig(
+            source_type=SourceType.MONGODB,
+            database="mydb",
+            password="mongosecret",
+        )
+        assert cfg.password.get_secret_value() == "mongosecret"
+        assert "mongosecret" not in cfg.model_dump_json()
+
+
+class TestSQLServerSourceConfig:
+    def test_defaults(self):
+        cfg = SourceConfig(source_type=SourceType.SQLSERVER, database="mydb")
+        assert cfg.source_type == SourceType.SQLSERVER
+        assert cfg.port == 5432  # users should override to 1433
+
+    def test_custom_port(self):
+        cfg = SourceConfig(
+            source_type=SourceType.SQLSERVER,
+            database="mydb",
+            host="sqlserver-host",
+            port=1433,
+        )
+        assert cfg.port == 1433
+
+    def test_valid_schema_qualified_tables(self):
+        cfg = SourceConfig(
+            source_type=SourceType.SQLSERVER,
+            database="mydb",
+            tables=["dbo.customers", "sales.orders"],
+        )
+        assert len(cfg.tables) == 2
+
+    def test_unqualified_table_raises(self):
+        with pytest.raises(ValidationError, match="qualified"):
+            SourceConfig(
+                source_type=SourceType.SQLSERVER,
+                database="mydb",
+                tables=["customers"],
+            )
+
+    def test_password_is_secret(self):
+        cfg = SourceConfig(
+            source_type=SourceType.SQLSERVER,
+            database="mydb",
+            password="sqls3cret",
+        )
+        assert cfg.password.get_secret_value() == "sqls3cret"
+        assert "sqls3cret" not in cfg.model_dump_json()
+
+
+class TestMySQLSourceConfig:
+    def test_mysql_server_id_default(self):
+        cfg = SourceConfig(source_type=SourceType.MYSQL, database="mydb")
+        assert cfg.mysql_server_id == 1
+
+    def test_mysql_server_id_custom(self):
+        cfg = SourceConfig(
+            source_type=SourceType.MYSQL,
+            database="mydb",
+            mysql_server_id=42,
+        )
+        assert cfg.mysql_server_id == 42
+
+    def test_mysql_server_id_rejects_zero(self):
+        with pytest.raises(ValidationError):
+            SourceConfig(
+                source_type=SourceType.MYSQL,
+                database="mydb",
+                mysql_server_id=0,
+            )
 
 
 class TestKafkaConfig:
@@ -82,6 +205,34 @@ class TestKafkaConfig:
         with pytest.raises(ValidationError):
             KafkaConfig(session_timeout_ms=500)
 
+    def test_high_throughput_defaults(self):
+        cfg = KafkaConfig()
+        assert cfg.poll_batch_size == 1
+        assert cfg.deser_pool_size == 1
+        assert cfg.commit_interval_seconds == 0.0
+
+    def test_high_throughput_custom(self):
+        cfg = KafkaConfig(
+            poll_batch_size=500,
+            deser_pool_size=4,
+            commit_interval_seconds=5.0,
+        )
+        assert cfg.poll_batch_size == 500
+        assert cfg.deser_pool_size == 4
+        assert cfg.commit_interval_seconds == 5.0
+
+    def test_rejects_zero_poll_batch_size(self):
+        with pytest.raises(ValidationError):
+            KafkaConfig(poll_batch_size=0)
+
+    def test_rejects_zero_deser_pool_size(self):
+        with pytest.raises(ValidationError):
+            KafkaConfig(deser_pool_size=0)
+
+    def test_rejects_negative_commit_interval(self):
+        with pytest.raises(ValidationError):
+            KafkaConfig(commit_interval_seconds=-1.0)
+
 
 class TestDLQConfig:
     def test_defaults(self):
@@ -93,6 +244,58 @@ class TestDLQConfig:
     def test_rejects_empty_topic_suffix(self):
         with pytest.raises(ValidationError):
             DLQConfig(topic_suffix="")
+
+    def test_flush_interval_default(self):
+        cfg = DLQConfig()
+        assert cfg.flush_interval_seconds == 0.0
+
+    def test_flush_interval_custom(self):
+        cfg = DLQConfig(flush_interval_seconds=5.0)
+        assert cfg.flush_interval_seconds == 5.0
+
+    def test_rejects_negative_flush_interval(self):
+        with pytest.raises(ValidationError):
+            DLQConfig(flush_interval_seconds=-1.0)
+
+
+class TestIcebergSinkHighThroughput:
+    def test_defaults(self):
+        cfg = IcebergSinkConfig(
+            catalog_uri="sqlite:////tmp/cat.db",
+            warehouse="file:///tmp/wh",
+            table_name="events",
+        )
+        assert cfg.flush_interval_seconds == 0.0
+        assert cfg.write_executor_threads == 0
+
+    def test_custom(self):
+        cfg = IcebergSinkConfig(
+            catalog_uri="sqlite:////tmp/cat.db",
+            warehouse="file:///tmp/wh",
+            table_name="events",
+            flush_interval_seconds=2.0,
+            write_executor_threads=4,
+        )
+        assert cfg.flush_interval_seconds == 2.0
+        assert cfg.write_executor_threads == 4
+
+    def test_rejects_negative_flush_interval(self):
+        with pytest.raises(ValidationError):
+            IcebergSinkConfig(
+                catalog_uri="sqlite:////tmp/cat.db",
+                warehouse="file:///tmp/wh",
+                table_name="events",
+                flush_interval_seconds=-1.0,
+            )
+
+    def test_rejects_negative_write_executor_threads(self):
+        with pytest.raises(ValidationError):
+            IcebergSinkConfig(
+                catalog_uri="sqlite:////tmp/cat.db",
+                warehouse="file:///tmp/wh",
+                table_name="events",
+                write_executor_threads=-1,
+            )
 
 
 class TestPipelineConfig:

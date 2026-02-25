@@ -9,6 +9,7 @@ from cdc_platform.config.models import (
     PipelineConfig,
     PlatformConfig,
     SourceConfig,
+    SourceType,
 )
 from cdc_platform.streaming.topics import (
     cdc_topic_name,
@@ -33,10 +34,11 @@ class TestTopicNaming:
 
 
 class TestTopicsForPipeline:
-    def test_with_dlq_enabled(self):
+    def test_postgres_with_dlq_enabled(self):
         pipeline = PipelineConfig(
             pipeline_id="test",
             source=SourceConfig(
+                source_type=SourceType.POSTGRES,
                 database="db",
                 tables=["public.customers", "public.orders"],
             ),
@@ -50,7 +52,7 @@ class TestTopicsForPipeline:
             "cdc.public.orders.dlq",
         ]
 
-    def test_with_dlq_disabled(self):
+    def test_postgres_with_dlq_disabled(self):
         pipeline = PipelineConfig(
             pipeline_id="test",
             source=SourceConfig(database="db", tables=["public.users"]),
@@ -58,6 +60,94 @@ class TestTopicsForPipeline:
         platform = PlatformConfig(dlq=DLQConfig(enabled=False))
         topics = topics_for_pipeline(pipeline, platform)
         assert topics == ["cdc.public.users"]
+
+    def test_mysql_topic_format(self):
+        """MySQL: <prefix>.<db>.<table>  (db comes from tables field, not source.database)."""
+        pipeline = PipelineConfig(
+            pipeline_id="test",
+            source=SourceConfig(
+                source_type=SourceType.MYSQL,
+                database="mydb",
+                tables=["mydb.customers", "mydb.orders"],
+            ),
+        )
+        topics = topics_for_pipeline(pipeline, PlatformConfig(dlq=DLQConfig(enabled=False)))
+        assert topics == ["cdc.mydb.customers", "cdc.mydb.orders"]
+
+    def test_mongodb_topic_format(self):
+        """MongoDB: <prefix>.<db>.<collection>"""
+        pipeline = PipelineConfig(
+            pipeline_id="test",
+            source=SourceConfig(
+                source_type=SourceType.MONGODB,
+                database="cdc_demo",
+                port=27017,
+                tables=["cdc_demo.products", "cdc_demo.orders"],
+            ),
+        )
+        topics = topics_for_pipeline(pipeline, PlatformConfig(dlq=DLQConfig(enabled=False)))
+        assert topics == ["cdc.cdc_demo.products", "cdc.cdc_demo.orders"]
+
+    def test_sqlserver_topic_format(self):
+        """SQL Server Debezium 2.x: <prefix>.<database>.<schema>.<table>.
+
+        The database name from SourceConfig is prepended, making a 4-part topic
+        name distinct from the 3-part names used by the other connectors.
+        """
+        pipeline = PipelineConfig(
+            pipeline_id="test",
+            source=SourceConfig(
+                source_type=SourceType.SQLSERVER,
+                database="cdc_demo",
+                port=1433,
+                tables=["dbo.customers", "sales.orders"],
+            ),
+        )
+        topics = topics_for_pipeline(pipeline, PlatformConfig(dlq=DLQConfig(enabled=False)))
+        assert topics == [
+            "cdc.cdc_demo.dbo.customers",
+            "cdc.cdc_demo.sales.orders",
+        ]
+
+    def test_sqlserver_topic_with_dlq(self):
+        pipeline = PipelineConfig(
+            pipeline_id="test",
+            source=SourceConfig(
+                source_type=SourceType.SQLSERVER,
+                database="cdc_demo",
+                port=1433,
+                tables=["dbo.customers"],
+            ),
+        )
+        topics = topics_for_pipeline(pipeline, PlatformConfig())
+        assert topics == [
+            "cdc.cdc_demo.dbo.customers",
+            "cdc.cdc_demo.dbo.customers.dlq",
+        ]
+
+    def test_custom_topic_prefix_applied_to_all_sources(self):
+        for source_type, kwargs in [
+            (SourceType.POSTGRES, {"tables": ["public.t"]}),
+            (SourceType.MYSQL,    {"tables": ["db.t"]}),
+            (SourceType.MONGODB,  {"tables": ["db.t"], "port": 27017}),
+            (SourceType.SQLSERVER, {"tables": ["dbo.t"], "port": 1433}),
+        ]:
+            pipeline = PipelineConfig(
+                pipeline_id="p",
+                topic_prefix="myprefix",
+                source=SourceConfig(
+                    source_type=source_type,
+                    database="db",
+                    **kwargs,
+                ),
+            )
+            topics = topics_for_pipeline(
+                pipeline, PlatformConfig(dlq=DLQConfig(enabled=False))
+            )
+            assert all(t.startswith("myprefix.") for t in topics), (
+                f"Expected all topics for {source_type} to start with 'myprefix.', "
+                f"got {topics}"
+            )
 
 
 class TestEnsureTopics:
