@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
 import structlog
 
 from cdc_platform.config.models import (
@@ -92,5 +93,18 @@ class KafkaProvisioner:
 
         async with DebeziumClient(self._platform.connector) as client:
             name = connector_name(pipeline)
-            await client.delete_connector(name)
-            logger.info("pipeline.connector_deleted", pipeline_id=pipeline.pipeline_id)
+            try:
+                await client.delete_connector(name)
+                logger.info(
+                    "pipeline.connector_deleted",
+                    pipeline_id=pipeline.pipeline_id,
+                )
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 404:
+                    logger.info(
+                        "pipeline.connector_already_deleted",
+                        pipeline_id=pipeline.pipeline_id,
+                        connector=name,
+                    )
+                else:
+                    raise

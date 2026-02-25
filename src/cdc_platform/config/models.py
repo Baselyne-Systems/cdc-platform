@@ -191,6 +191,8 @@ class KinesisConfig(BaseModel):
     poll_interval_seconds: float = Field(default=1.0, gt=0)
     max_records_per_shard: int = Field(default=100, ge=1)
     dlq_stream_suffix: str = "dlq"
+    dlq_shard_count: int = Field(default=1, ge=1)
+    checkpoint_ttl_seconds: int = Field(default=604800, ge=0)  # 7 days; 0 = disabled
 
 
 class ConnectorConfig(BaseModel):

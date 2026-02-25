@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import structlog
 
 from cdc_platform.config.models import KinesisConfig
@@ -16,6 +18,7 @@ class DynamoDBCheckpointStore:
         - Partition key: ``stream_name`` (S)
         - Sort key: ``shard_id`` (S)
         - Attribute: ``sequence_number`` (S)
+        - Attribute: ``ttl`` (N) — epoch seconds for DynamoDB TTL
     """
 
     def __init__(self, config: KinesisConfig) -> None:
@@ -58,13 +61,17 @@ class DynamoDBCheckpointStore:
         """Store a checkpoint for a shard."""
         client = self._get_client()
         try:
+            item: dict[str, dict[str, str]] = {
+                "stream_name": {"S": stream_name},
+                "shard_id": {"S": shard_id},
+                "sequence_number": {"S": sequence_number},
+            }
+            ttl_seconds = self._config.checkpoint_ttl_seconds
+            if ttl_seconds > 0:
+                item["ttl"] = {"N": str(int(time.time()) + ttl_seconds)}
             client.put_item(
                 TableName=self._table_name,
-                Item={
-                    "stream_name": {"S": stream_name},
-                    "shard_id": {"S": shard_id},
-                    "sequence_number": {"S": sequence_number},
-                },
+                Item=item,
             )
         except Exception:
             logger.exception(
@@ -97,3 +104,14 @@ class DynamoDBCheckpointStore:
             # Wait for table to become active
             waiter = client.get_waiter("table_exists")
             waiter.wait(TableName=self._table_name)
+
+            # Enable TTL if configured
+            if self._config.checkpoint_ttl_seconds > 0:
+                client.update_time_to_live(
+                    TableName=self._table_name,
+                    TimeToLiveSpecification={
+                        "Enabled": True,
+                        "AttributeName": "ttl",
+                    },
+                )
+                logger.info("checkpoint.ttl_enabled", table=self._table_name)

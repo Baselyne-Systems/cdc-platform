@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from cdc_platform.config.models import (
@@ -83,6 +84,48 @@ class TestKafkaProvisioner:
             await provisioner.teardown(_pipeline())
 
             mock_client.delete_connector.assert_awaited_once()
+
+    async def test_teardown_ignores_404(self):
+        """Teardown should not raise if connector is already deleted (404)."""
+        platform = PlatformConfig()
+        provisioner = KafkaProvisioner(platform)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        mock_request = MagicMock()
+        error_404 = httpx.HTTPStatusError(
+            "Not Found", request=mock_request, response=mock_response
+        )
+
+        with patch("cdc_platform.sources.kafka.provisioner.DebeziumClient") as mock_cls:
+            mock_client = AsyncMock()
+            mock_client.delete_connector.side_effect = error_404
+            mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            # Should NOT raise
+            await provisioner.teardown(_pipeline())
+
+    async def test_teardown_raises_non_404_errors(self):
+        """Teardown should re-raise non-404 HTTP errors."""
+        platform = PlatformConfig()
+        provisioner = KafkaProvisioner(platform)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_request = MagicMock()
+        error_500 = httpx.HTTPStatusError(
+            "Server Error", request=mock_request, response=mock_response
+        )
+
+        with patch("cdc_platform.sources.kafka.provisioner.DebeziumClient") as mock_cls:
+            mock_client = AsyncMock()
+            mock_client.delete_connector.side_effect = error_500
+            mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            with pytest.raises(httpx.HTTPStatusError):
+                await provisioner.teardown(_pipeline())
 
     async def test_provision_rolls_back_topics_on_connector_failure(self):
         """If connector registration fails, created topics should be deleted."""
