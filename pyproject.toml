@@ -26,6 +26,18 @@ postgres = [
 iceberg = [
     "pyiceberg[pyarrow,sql-sqlite,s3fs]>=0.8,<1",
 ]
+aws = [
+    "boto3>=1.35,<2",
+    "aws-msk-iam-sasl-signer-python>=1.0,<2",
+]
+gcp = [
+    "google-auth>=2.36,<3",
+    "google-cloud-pubsub>=2.27,<3",
+    "google-cloud-monitoring>=2.23,<3",
+]
+wal = [
+    "psycopg[binary]>=3.2,<4",
+]
 dev = [
     "pytest>=8,<9",
     "pytest-asyncio>=0.24,<1",

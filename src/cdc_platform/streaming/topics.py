@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import structlog
 from confluent_kafka.admin import AdminClient, NewTopic  # type: ignore[attr-defined]
 
-from cdc_platform.config.models import PipelineConfig, PlatformConfig, SourceType
+from cdc_platform.config.models import (
+    KafkaConfig,
+    PipelineConfig,
+    PlatformConfig,
+    SourceType,
+)
+from cdc_platform.streaming.auth import build_kafka_auth_config
 
 logger = structlog.get_logger()
 
@@ -67,9 +75,13 @@ def ensure_topics(
     *,
     num_partitions: int = 1,
     replication_factor: int = 1,
+    kafka_config: KafkaConfig | None = None,
 ) -> None:
     """Create topics if they don't already exist."""
-    admin = AdminClient({"bootstrap.servers": bootstrap_servers})
+    admin_conf: dict[str, Any] = {"bootstrap.servers": bootstrap_servers}
+    if kafka_config is not None:
+        admin_conf.update(build_kafka_auth_config(kafka_config))
+    admin = AdminClient(admin_conf)
     existing = set(admin.list_topics(timeout=10).topics.keys())
     to_create = [
         NewTopic(

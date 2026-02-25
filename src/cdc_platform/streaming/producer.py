@@ -2,23 +2,26 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import structlog
 from confluent_kafka import Producer
 
 from cdc_platform.config.models import KafkaConfig
+from cdc_platform.streaming.auth import build_kafka_auth_config
 
 logger = structlog.get_logger()
 
 
 def create_producer(config: KafkaConfig) -> Producer:
     """Create an idempotent Kafka producer."""
-    return Producer(
-        {
-            "bootstrap.servers": config.bootstrap_servers,
-            "enable.idempotence": config.enable_idempotence,
-            "acks": config.acks,
-        }
-    )
+    producer_conf: dict[str, Any] = {
+        "bootstrap.servers": config.bootstrap_servers,
+        "enable.idempotence": config.enable_idempotence,
+        "acks": config.acks,
+    }
+    producer_conf.update(build_kafka_auth_config(config))
+    return Producer(producer_conf)
 
 
 def produce_message(

@@ -8,7 +8,7 @@ from typing import Any
 
 import structlog
 
-from cdc_platform.config.models import PipelineConfig, PlatformConfig
+from cdc_platform.config.models import PipelineConfig, PlatformConfig, TransportMode
 from cdc_platform.observability.http_health import HealthServer
 from cdc_platform.sinks.base import SinkConnector
 from cdc_platform.sinks.factory import create_sink
@@ -21,6 +21,7 @@ from cdc_platform.sources.factory import (
     create_source_monitor,
 )
 from cdc_platform.sources.monitor import SourceMonitor
+from cdc_platform.sources.wal.reader import WalReader
 
 logger = structlog.get_logger()
 
@@ -45,6 +46,8 @@ class Pipeline:
         self._monitor: SourceMonitor | None = None
         self._health_server: HealthServer | None = None
         self._queue_monitor_task: asyncio.Task[None] | None = None
+        self._wal_reader: WalReader | None = None
+        self._wal_reader_task: asyncio.Task[None] | None = None
         self._commit_interval: float = (
             platform.kafka.commit_interval_seconds if platform.kafka else 0.0
         )
@@ -71,6 +74,14 @@ class Pipeline:
             await sink.start()
             self._sinks.append(sink)
             logger.info("pipeline.sink_started", sink_id=sink.sink_id)
+
+        # 4a. Start WAL reader for non-Kafka transports
+        if self._platform.transport_mode in (
+            TransportMode.PUBSUB,
+            TransportMode.KINESIS,
+        ):
+            self._wal_reader = self._create_wal_reader()
+            self._wal_reader_task = asyncio.create_task(self._wal_reader.start())
 
         # 4. Build event source
         self._source = create_event_source(self._pipeline, self._platform)
@@ -231,8 +242,43 @@ class Pipeline:
         if self._commit_interval <= 0:
             self._maybe_commit_watermark()
 
+    def _create_wal_reader(self) -> WalReader:
+        """Create a WAL reader with the appropriate publisher."""
+        assert self._platform.wal_reader is not None
+
+        from cdc_platform.sources.wal.publisher import WalPublisher
+
+        publisher: WalPublisher
+        if self._platform.transport_mode == TransportMode.PUBSUB:
+            assert self._platform.pubsub is not None
+            from cdc_platform.sources.pubsub.publisher import PubSubWalPublisher
+
+            publisher = PubSubWalPublisher(self._platform.pubsub)
+        elif self._platform.transport_mode == TransportMode.KINESIS:
+            assert self._platform.kinesis is not None
+            from cdc_platform.sources.kinesis.publisher import KinesisWalPublisher
+
+            publisher = KinesisWalPublisher(self._platform.kinesis)
+        else:
+            msg = f"No WAL publisher for transport: {self._platform.transport_mode}"
+            raise ValueError(msg)
+
+        return WalReader(
+            source_config=self._pipeline.source,
+            wal_config=self._platform.wal_reader,
+            publisher=publisher,
+            topic_prefix=self._pipeline.topic_prefix,
+        )
+
     async def _shutdown(self) -> None:
-        """Stop health server, monitors, drain workers, flush sinks."""
+        """Stop health server, monitors, WAL reader, drain workers, flush sinks."""
+        # Stop WAL reader first
+        if self._wal_reader is not None:
+            await self._wal_reader.stop()
+        if self._wal_reader_task is not None:
+            self._wal_reader_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._wal_reader_task
         if self._commit_task:
             self._commit_task.cancel()
             with suppress(asyncio.CancelledError):

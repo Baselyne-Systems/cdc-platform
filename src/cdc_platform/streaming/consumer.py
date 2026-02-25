@@ -21,6 +21,7 @@ from confluent_kafka.schema_registry.avro import AvroDeserializer
 from confluent_kafka.serialization import MessageField, SerializationContext
 
 from cdc_platform.config.models import DLQConfig, KafkaConfig
+from cdc_platform.streaming.auth import build_kafka_auth_config
 from cdc_platform.streaming.dlq import DLQHandler
 from cdc_platform.streaming.producer import create_producer
 
@@ -72,18 +73,18 @@ class CDCConsumer:
         self._key_deser = AvroDeserializer(registry)
         self._value_deser = AvroDeserializer(registry)
 
-        self._consumer = Consumer(
-            {
-                "bootstrap.servers": kafka_config.bootstrap_servers,
-                "group.id": kafka_config.group_id,
-                "auto.offset.reset": kafka_config.auto_offset_reset,
-                "enable.auto.commit": False,
-                "session.timeout.ms": kafka_config.session_timeout_ms,
-                "max.poll.interval.ms": kafka_config.max_poll_interval_ms,
-                "fetch.min.bytes": kafka_config.fetch_min_bytes,
-                "fetch.wait.max.ms": kafka_config.fetch_max_wait_ms,
-            }
-        )
+        consumer_conf: dict[str, Any] = {
+            "bootstrap.servers": kafka_config.bootstrap_servers,
+            "group.id": kafka_config.group_id,
+            "auto.offset.reset": kafka_config.auto_offset_reset,
+            "enable.auto.commit": False,
+            "session.timeout.ms": kafka_config.session_timeout_ms,
+            "max.poll.interval.ms": kafka_config.max_poll_interval_ms,
+            "fetch.min.bytes": kafka_config.fetch_min_bytes,
+            "fetch.wait.max.ms": kafka_config.fetch_max_wait_ms,
+        }
+        consumer_conf.update(build_kafka_auth_config(kafka_config))
+        self._consumer = Consumer(consumer_conf)
 
         self._dlq: DLQHandler | None
         dlq_cfg = dlq_config or DLQConfig()

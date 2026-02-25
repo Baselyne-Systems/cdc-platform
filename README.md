@@ -10,7 +10,7 @@ CDC Platform owns the full pipeline from source database to sink destination. It
 
 Supported source databases: **PostgreSQL** (logical replication), **MySQL** (binlog), **MongoDB** (change streams), and **SQL Server** (CDC tables). Each is configured with a single `source_type` field; the platform handles connector deployment, topic naming, and snapshot behavior automatically.
 
-The platform uses a **transport-agnostic architecture** — the core pipeline is decoupled from any specific event transport through protocol-based abstractions. Kafka is the default transport (including MSK and Confluent Cloud), with the architecture designed to support additional transports (Pub/Sub, embedded PG) without modifying the core pipeline. Events are delivered with exactly-once guarantees through min-watermark offset commits and idempotent writes.
+The platform uses a **transport-agnostic architecture** — the core pipeline is decoupled from any specific event transport through protocol-based abstractions. Three transports are supported: **Kafka** (default, including MSK IAM and GCP Managed Kafka auth), **Google Pub/Sub**, and **Amazon Kinesis**. Non-Kafka transports use a direct WAL reader instead of Debezium. Events are delivered with exactly-once guarantees through min-watermark offset commits and idempotent writes. See **[docs/transports.md](docs/transports.md)** for the full transport comparison, configuration, and migration guide.
 
 ```
  ┌─────────────────── CDC Platform ──────────────────────────────┐
@@ -42,7 +42,7 @@ The source database and sink destinations are the only components outside the pl
 
 ## Features
 
-- **Transport-agnostic architecture** — protocol-based abstractions (`EventSource`, `Provisioner`, `ErrorRouter`, `SourceMonitor`) decouple the pipeline from any specific event transport. Kafka is the default; new transports can be added without modifying the core pipeline.
+- **Multi-transport support** — protocol-based abstractions (`EventSource`, `Provisioner`, `ErrorRouter`, `SourceMonitor`) decouple the pipeline from any specific event transport. Three transports are supported: **Kafka** (default), **Google Pub/Sub**, and **Amazon Kinesis**.
 - **Multi-sink fan-out** — each CDC event is dispatched concurrently to all enabled sinks
 - **Backpressure** — bounded per-partition queues prevent unbounded memory growth when sinks are slow
 - **Parallel consumption** — per-partition async workers process independently within a single asyncio process
@@ -50,6 +50,8 @@ The source database and sink destinations are the only components outside the pl
 - **Schema evolution monitoring** — polls Schema Registry for version changes, optionally halts on incompatible changes
 - **Dead Letter Queue** — per-sink failures are routed to an error destination with full diagnostic headers
 - **Avro serialization** — schema evolution managed by Confluent Schema Registry (Kafka transport)
+- **Managed Kafka auth** — AWS MSK (IAM), GCP Managed Kafka (OAuth), SASL PLAIN/SCRAM with config-level auth fields
+- **Direct WAL reader** — for Pub/Sub and Kinesis, replaces Debezium with a native PostgreSQL logical replication reader
 - **Retry with backoff** — configurable exponential backoff with jitter on all sink writes
 - **Defaults-based config** — built-in defaults with per-pipeline overrides, validated by Pydantic
 - **Lakehouse maintenance** — background compaction and snapshot expiry for Iceberg tables
@@ -124,6 +126,9 @@ docker compose -f docker/docker-compose.yml -f docker/docker-compose.sqlserver.y
 uv sync                          # core dependencies
 uv sync --extra postgres         # + PostgreSQL sink
 uv sync --extra iceberg          # + Iceberg sink
+uv sync --extra gcp              # + Google Pub/Sub transport
+uv sync --extra aws              # + Amazon Kinesis transport
+uv sync --extra wal              # + Direct WAL reader (required for Pub/Sub + Kinesis)
 uv sync --extra dev              # + dev/test tools
 ```
 
@@ -131,6 +136,8 @@ Or with pip:
 
 ```bash
 pip install -e ".[postgres,iceberg,dev]"
+pip install -e ".[gcp,wal]"      # For Pub/Sub transport
+pip install -e ".[aws,wal]"      # For Kinesis transport
 ```
 
 ### 3. Check platform health
@@ -206,7 +213,7 @@ Pipeline configs are validated strictly — including `kafka`, `connector`, or `
 Configures the platform's managed infrastructure: transport mode, Kafka, Debezium Connect, Schema Registry, DLQ behavior, and pipeline tuning. All fields have sensible defaults, so this file is **optional for local development**.
 
 ```yaml
-transport_mode: kafka    # Event transport (currently: kafka)
+transport_mode: kafka    # Event transport: kafka | pubsub | kinesis
 
 kafka:
   bootstrap_servers: kafka-prod:9092
@@ -216,7 +223,7 @@ connector:
   connect_url: http://connect-prod:8083
 ```
 
-Only specify fields that differ from the defaults. See `examples/platform.yaml` for a production override example.
+Only specify fields that differ from the defaults. See `examples/platform.yaml` for Kafka, `examples/platform-pubsub.yaml` for Pub/Sub, `examples/platform-kinesis.yaml` for Kinesis, and **[docs/transports.md](docs/transports.md)** for the full reference.
 
 ### Environment variables
 
@@ -261,9 +268,9 @@ These configure the platform's managed infrastructure. They live in `platform.ya
 
 | Field            | Default | Description                                         |
 |------------------|---------|-----------------------------------------------------|
-| `transport_mode` | `kafka` | Event transport backend (`kafka`). Future: `pubsub`, `embedded`. |
+| `transport_mode` | `kafka` | Event transport backend: `kafka`, `pubsub`, or `kinesis`. |
 
-When `transport_mode` is `kafka`, the `kafka` and `connector` sections are required (and provided by default). Future transport modes may require different configuration sections.
+When `transport_mode` is `kafka`, the `kafka` and `connector` sections are required. When `pubsub`, the `pubsub` and `wal_reader` sections are required. When `kinesis`, the `kinesis` and `wal_reader` sections are required. See **[docs/transports.md](docs/transports.md)** for full configuration reference.
 
 **Kafka** (`kafka.*`) — Required when `transport_mode: kafka`. The platform provisions topics, manages consumer groups, commits offsets, and monitors schemas through Kafka and the Schema Registry.
 
@@ -379,14 +386,13 @@ The core pipeline operates through four transport-agnostic protocols:
 - **`ErrorRouter`** — Routes failed events to a dead-letter destination with diagnostic metadata.
 - **`SourceMonitor`** — Background monitoring for schema changes and consumer lag.
 
-A factory (`sources/factory.py`) dispatches on `transport_mode` to create the appropriate implementation. Currently, only the `kafka` transport is implemented:
+A factory (`sources/factory.py`) dispatches on `transport_mode` to create the appropriate implementation. Three transports are supported:
 
-- **Kafka** — Topics are provisioned automatically from source table names. The platform owns the consumer group, offset lifecycle, and DLQ topics.
-- **Schema Registry** — Debezium publishes Avro schemas; the platform monitors them for version changes and compatibility.
-- **Debezium** — The platform deploys and manages the source connector via the Kafka Connect REST API.
-- **Consumer + dispatch** — The platform's async consumer, per-partition queues, and worker tasks are the processing core.
+- **Kafka** (default) — Topics are provisioned automatically. Debezium captures WAL/binlog changes and publishes Avro to Kafka. The platform owns the consumer group, offset lifecycle, DLQ topics, and schema monitoring. Supports MSK IAM, GCP Managed Kafka OAuth, and SASL PLAIN/SCRAM auth.
+- **Google Pub/Sub** — Topics and subscriptions are provisioned automatically. A direct WAL reader replaces Debezium, reading PostgreSQL logical replication and publishing JSON to Pub/Sub. Virtual partitions via consistent hashing preserve per-partition ordering.
+- **Amazon Kinesis** — Streams are provisioned automatically. A direct WAL reader publishes JSON to Kinesis. Per-shard reader tasks map shards to partitions. Sequence numbers are checkpointed to DynamoDB.
 
-The source database and sink destinations are the only things outside the platform boundary. The source is read-only (Debezium captures WAL changes). Sinks are write-only (the platform pushes events to them).
+The source database and sink destinations are the only things outside the platform boundary. The source is read-only (captured via Debezium or direct WAL reader). Sinks are write-only (the platform pushes events to them).
 
 ### Pipeline lifecycle
 
@@ -572,11 +578,32 @@ src/cdc_platform/
 │   ├── debezium/
 │   │   ├── client.py               # Async Kafka Connect REST client
 │   │   └── config.py               # Debezium connector config builder
-│   └── kafka/
-│       ├── source.py               # KafkaEventSource (wraps CDCConsumer)
-│       ├── provisioner.py          # KafkaProvisioner (topics + Debezium registration)
-│       └── monitor.py              # KafkaSourceMonitor (SchemaMonitor + LagMonitor)
+│   ├── kafka/
+│   │   ├── source.py               # KafkaEventSource (wraps CDCConsumer)
+│   │   ├── provisioner.py          # KafkaProvisioner (topics + Debezium registration)
+│   │   └── monitor.py              # KafkaSourceMonitor (SchemaMonitor + LagMonitor)
+│   ├── pubsub/                     # Google Pub/Sub transport
+│   │   ├── source.py               # PubSubEventSource (streaming pull + virtual partitions)
+│   │   ├── provisioner.py          # PubSubProvisioner (topics + subscriptions + PG slot)
+│   │   ├── error_router.py         # PubSubErrorRouter (DLQ topic)
+│   │   ├── monitor.py              # PubSubSourceMonitor (subscription backlog)
+│   │   ├── publisher.py            # PubSubWalPublisher (WalPublisher impl)
+│   │   └── naming.py               # Topic/subscription naming conventions
+│   ├── kinesis/                    # Amazon Kinesis transport
+│   │   ├── source.py               # KinesisEventSource (per-shard GetRecords)
+│   │   ├── provisioner.py          # KinesisProvisioner (streams + DynamoDB + PG slot)
+│   │   ├── error_router.py         # KinesisErrorRouter (DLQ stream)
+│   │   ├── monitor.py              # KinesisSourceMonitor (MillisBehindLatest)
+│   │   ├── publisher.py            # KinesisWalPublisher (WalPublisher impl)
+│   │   ├── checkpoint.py           # DynamoDB checkpoint store
+│   │   └── naming.py               # Stream naming conventions
+│   └── wal/                        # Direct WAL reader (non-Kafka transports)
+│       ├── reader.py               # Async logical replication stream consumer
+│       ├── decoder.py              # pgoutput binary protocol decoder
+│       ├── publisher.py            # WalPublisher protocol
+│       └── slot_manager.py         # Replication slot + publication lifecycle
 ├── streaming/
+│   ├── auth.py                     # Kafka auth config builder (MSK IAM, GCP OAuth, SASL)
 │   ├── consumer.py                 # Avro-deserializing Kafka consumer
 │   ├── producer.py                 # Idempotent Kafka producer
 │   ├── dlq.py                      # Dead Letter Queue handler (satisfies ErrorRouter)
@@ -615,7 +642,11 @@ docker/
     └── init.sql                    # sys.sp_cdc_enable_db/table + seed customers table
 
 examples/
-├── platform.yaml                   # Production platform config override
+├── platform.yaml                   # Production platform config override (Kafka)
+├── platform-msk.yaml               # AWS MSK with IAM auth
+├── platform-gcp-kafka.yaml         # GCP Managed Kafka with OAuth
+├── platform-pubsub.yaml            # Google Pub/Sub transport
+├── platform-kinesis.yaml           # Amazon Kinesis transport
 ├── demo-config.yaml                # PostgreSQL demo pipeline (webhook + postgres + iceberg sinks)
 ├── mongodb-pipeline.yaml           # MongoDB CDC pipeline example
 └── sqlserver-pipeline.yaml         # SQL Server CDC pipeline example
@@ -627,7 +658,8 @@ helm/cdc-platform/                  # Platform Helm chart (Kafka, Schema Registr
 
 tests/
 ├── unit/                           # Unit tests (no Docker required)
-└── integration/                    # Integration tests (requires Docker stack)
+├── integration/                    # Integration tests (requires Docker stack)
+└── benchmark/                      # Throughput + backpressure benchmarks
 ```
 
 ## Development
@@ -696,7 +728,7 @@ The Connect service uses a custom Docker image (`docker/connect/Dockerfile`) tha
 
 ### Adding a new transport
 
-The platform's transport abstraction makes it possible to add new event sources (e.g. Pub/Sub, embedded PG WAL reader) without modifying the core pipeline. Four protocols must be implemented:
+The platform's transport abstraction makes it possible to add new event sources without modifying the core pipeline. See `sources/pubsub/` and `sources/kinesis/` for reference implementations. Four protocols must be implemented:
 
 1. **Add a `TransportMode` variant** — Add the new mode to the `TransportMode` enum in `config/models.py` (e.g. `PUBSUB = "pubsub"`). Add any transport-specific config models and update the `PlatformConfig` model validator to enforce requirements for the new mode.
 

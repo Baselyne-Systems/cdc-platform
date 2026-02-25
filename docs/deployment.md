@@ -6,8 +6,8 @@ This guide covers deploying CDC Platform in production on Kubernetes. It covers 
 
 CDC Platform follows a **two-phase deployment model**:
 
-1. **Platform** (deployed once) — shared infrastructure that all pipelines depend on. For the default `kafka` transport: Kafka, Schema Registry, and Kafka Connect with Debezium plugins.
-2. **Pipelines** (deployed on demand) — each pipeline is a `cdc run` process with its own config. It provisions transport resources (topics + connectors), consumes CDC events via the configured `EventSource`, and routes them to sinks.
+1. **Platform** (deployed once) — shared infrastructure that all pipelines depend on. For `kafka`: Kafka, Schema Registry, and Kafka Connect with Debezium plugins. For `pubsub`: GCP project with Pub/Sub API. For `kinesis`: AWS account with Kinesis + DynamoDB.
+2. **Pipelines** (deployed on demand) — each pipeline is a `cdc run` process with its own config. It provisions transport resources (topics/streams + connectors/replication slots), consumes CDC events via the configured `EventSource`, and routes them to sinks.
 
 ```
                         ┌── Transport (configurable) ──┐
@@ -16,9 +16,9 @@ CDC Platform follows a **two-phase deployment model**:
               ─── Platform (shared) ───        ── Per-pipeline ──
 ```
 
-The platform uses a transport-agnostic architecture. The `transport_mode` setting in `platform.yaml` selects the event transport backend (currently `kafka`). The core pipeline interacts only with protocol abstractions (`EventSource`, `Provisioner`, `ErrorRouter`, `SourceMonitor`), making the transport layer pluggable.
+The platform uses a transport-agnostic architecture. The `transport_mode` setting in `platform.yaml` selects the event transport backend (`kafka`, `pubsub`, or `kinesis`). The core pipeline interacts only with protocol abstractions (`EventSource`, `Provisioner`, `ErrorRouter`, `SourceMonitor`), making the transport layer pluggable.
 
-The platform Helm chart deploys the shared infrastructure for the Kafka transport. Each pipeline runs as a separate Kubernetes Deployment using the pipeline Docker image.
+The platform Helm chart deploys the shared infrastructure for the Kafka transport. For Pub/Sub and Kinesis, the cloud provider manages the infrastructure — only pipeline workers are deployed. Each pipeline runs as a separate Kubernetes Deployment using the pipeline Docker image.
 
 ### What the Platform Chart Deploys
 
@@ -106,6 +106,30 @@ kafkaConnect:
 ```
 
 The Kafka Connect image (`Dockerfile.connect`) extends `confluentinc/cp-kafka-connect-base` with all four Debezium connector plugins pre-installed: PostgreSQL, MySQL, MongoDB, and SQL Server.
+
+### Using Managed Kafka (MSK / GCP Managed Kafka)
+
+For managed Kafka services with auth, configure `auth_mechanism` in `platform.yaml`:
+
+```yaml
+# AWS MSK with IAM auth
+kafka:
+  bootstrap_servers: "b-1.mycluster.kafka.us-east-1.amazonaws.com:9098"
+  security_protocol: "SASL_SSL"
+  auth_mechanism: "sasl_iam"
+  aws_region: "us-east-1"
+```
+
+```yaml
+# GCP Managed Kafka with OAuth
+kafka:
+  bootstrap_servers: "bootstrap.my-cluster.us-central1.managedkafka.my-project.cloud.goog:9092"
+  security_protocol: "SASL_SSL"
+  auth_mechanism: "sasl_oauthbearer"
+  gcp_project_id: "my-project"
+```
+
+See `examples/platform-msk.yaml` and `examples/platform-gcp-kafka.yaml` for full examples.
 
 ### Using Managed Services Instead
 
@@ -454,7 +478,7 @@ CDC Platform uses structured logging (structlog). To expose metrics to Prometheu
 All fields with defaults. Only override what differs from your environment.
 
 ```yaml
-transport_mode: kafka              # Event transport backend (currently: kafka)
+transport_mode: kafka              # Event transport backend: kafka | pubsub | kinesis
 
 kafka:                             # Required when transport_mode: kafka
   bootstrap_servers: localhost:9092
@@ -524,6 +548,99 @@ cdc run pipeline.yaml
 
 ---
 
+## GCP Deployment (Pub/Sub Transport)
+
+For Pub/Sub transport, the cloud provider manages topics and subscriptions. Only the pipeline workers need to be deployed.
+
+### Prerequisites
+
+- GCP project with Pub/Sub API enabled
+- Application Default Credentials configured (service account key or Workload Identity)
+- PostgreSQL source with `wal_level = logical`
+- Install: `pip install cdc-platform[gcp,wal]`
+
+### Platform Config
+
+```yaml
+transport_mode: pubsub
+pubsub:
+  project_id: "my-gcp-project"
+  ordering_enabled: true
+  ack_deadline_seconds: 600
+  max_outstanding_messages: 1000
+wal_reader:
+  publication_name: "cdc_publication"
+  slot_name: "cdc_slot"
+  batch_size: 100
+  batch_timeout_seconds: 1.0
+```
+
+See `examples/platform-pubsub.yaml` for a full example.
+
+### GKE with Workload Identity
+
+For GKE deployments, use [Workload Identity](https://cloud.google.com/kubernetes-engine/docs/how-to/workload-identity) to provide Application Default Credentials to the pipeline pods without managing service account keys:
+
+1. Create a GCP service account with `roles/pubsub.editor` and `roles/monitoring.viewer`
+2. Bind the Kubernetes service account to the GCP service account
+3. Annotate the pod service account with `iam.gke.io/gcp-service-account`
+
+### What the Provisioner Creates
+
+- Pub/Sub topics for each CDC table (e.g. `cdc-public-customers`)
+- Subscriptions with ordering enabled and dead-letter policy
+- DLQ topics (e.g. `cdc-public-customers-dlq`)
+- PostgreSQL replication slot and publication
+
+---
+
+## AWS Deployment (Kinesis Transport)
+
+For Kinesis transport, the cloud provider manages streams. Only the pipeline workers need to be deployed.
+
+### Prerequisites
+
+- AWS account with Kinesis and DynamoDB access
+- IAM credentials configured (IAM role, instance profile, or environment variables)
+- PostgreSQL source with `wal_level = logical`
+- Install: `pip install cdc-platform[aws,wal]`
+
+### Platform Config
+
+```yaml
+transport_mode: kinesis
+kinesis:
+  region: "us-east-1"
+  shard_count: 2
+  checkpoint_table_name: "cdc-kinesis-checkpoints"
+  poll_interval_seconds: 1.0
+  max_records_per_shard: 100
+wal_reader:
+  publication_name: "cdc_publication"
+  slot_name: "cdc_slot"
+  batch_size: 100
+  batch_timeout_seconds: 1.0
+```
+
+See `examples/platform-kinesis.yaml` for a full example.
+
+### EKS with IAM Roles for Service Accounts (IRSA)
+
+For EKS deployments, use [IRSA](https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html) to grant AWS permissions:
+
+1. Create an IAM role with policies for `kinesis:*`, `dynamodb:*`, and `cloudwatch:GetMetricData`
+2. Associate the role with the Kubernetes service account via IRSA annotation
+3. The pipeline pods automatically receive temporary credentials
+
+### What the Provisioner Creates
+
+- Kinesis streams for each CDC table (e.g. `cdc-public-customers`)
+- DLQ streams (e.g. `cdc-public-customers-dlq`)
+- DynamoDB checkpoint table for shard sequence numbers
+- PostgreSQL replication slot and publication
+
+---
+
 ## Production Checklist
 
 ### Kafka
@@ -561,6 +678,24 @@ cdc run pipeline.yaml
 - [ ] CDC enabled on each captured table: `EXEC sys.sp_cdc_enable_table @source_schema, @source_name, @role_name = NULL`
 - [ ] CDC user granted `db_datareader` and `EXECUTE` on CDC stored procedures (`cdc` schema)
 - [ ] Developer or Enterprise edition required (Express does not support SQL Server Agent)
+
+### Google Pub/Sub
+- [ ] GCP project with Pub/Sub API enabled
+- [ ] Service account with `roles/pubsub.editor` and `roles/monitoring.viewer`
+- [ ] `wal_level = logical` on the PostgreSQL source
+- [ ] `wal_reader.slot_name` unique per pipeline
+- [ ] `ack_deadline_seconds` set high enough for sink processing time (max 600)
+- [ ] DLQ topic monitoring configured
+- [ ] Subscription ordering enabled if event ordering matters
+
+### Amazon Kinesis
+- [ ] IAM role with `kinesis:*`, `dynamodb:*` permissions
+- [ ] `wal_level = logical` on the PostgreSQL source
+- [ ] `wal_reader.slot_name` unique per pipeline
+- [ ] `shard_count` set based on expected throughput (1 shard ≈ 1 MB/s write, 2 MB/s read)
+- [ ] DynamoDB checkpoint table provisioned capacity or on-demand billing configured
+- [ ] CloudWatch monitoring for `MillisBehindLatest`
+- [ ] Enhanced fan-out considered for high-throughput workloads
 
 ### Iceberg
 - [ ] Catalog URI and warehouse credentials configured

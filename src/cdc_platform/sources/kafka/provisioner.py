@@ -33,6 +33,7 @@ class KafkaProvisioner:
             all_topics,
             num_partitions=self._platform.kafka.topic_num_partitions,
             replication_factor=self._platform.kafka.topic_replication_factor,
+            kafka_config=self._platform.kafka,
         )
 
         # 2. Deploy Debezium connector — rollback topics on failure

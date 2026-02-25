@@ -15,8 +15,10 @@ The benchmark suite lives in `tests/benchmark/` and is independent of the integr
 
 ### Key Components
 
-- **Direct Kafka Production**: Most tests (`test_sink_latency`, `test_backpressure`, `test_multi_partition`) bypass Debezium and produce Avro messages directly to Kafka using `AvroProducer`. This gives precise control over input rate, volume, and data shape.
+- **Direct Kafka Production**: Most Kafka tests (`test_sink_latency`, `test_backpressure`, `test_multi_partition`) bypass Debezium and produce Avro messages directly to Kafka using `AvroProducer`. This gives precise control over input rate, volume, and data shape.
 - **E2E Throughput**: The `test_throughput` module exercises the full path: PostgreSQL INSERTs -> Debezium capture -> Kafka -> Consumer -> Sink.
+- **WAL Decoder Benchmarks**: The `test_wal_decoder_throughput` module measures pgoutput binary decoding throughput for the direct WAL reader used by Pub/Sub and Kinesis transports.
+- **Transport Benchmarks**: The `test_transport_throughput` module measures virtual partition hashing, naming conventions, WAL publisher throughput (Pub/Sub + Kinesis), JSON serialization, and end-to-end decode-to-publish pipelines with mocked cloud clients.
 - **Instrumented Sinks**: Sinks are wrapped in an `InstrumentedSink` decorator that tracks write latency without modifying the core sink code.
 - **Process Isolation**: To prevent segmentation faults caused by C-extensions (fastavro/confluent-kafka) during high-volume runs, tests are executed in separate Python processes via the Makefile.
 
@@ -89,6 +91,24 @@ Measures how throughput scales with partition count.
 - **Scenarios**: 1, 4, and 8 partitions.
 - **Flow**: Parallel consumption with one async worker per partition.
 - **Metrics**: Aggregate throughput (messages/second).
+
+### `test_wal_decoder_throughput.py` (WAL Decoder)
+
+Measures pgoutput binary decoding throughput for the direct WAL reader.
+
+- **Scenarios**: Pure INSERT (10K/50K/100K), mixed INSERT/UPDATE/DELETE, wide tables (10/50/100 columns), multi-table interleaved, large text values (10KB), null-heavy sparse rows.
+- **Metrics**: Messages decoded per second, data rate for large values.
+- **Thresholds**: INSERT decoding > 50K/s, wide tables > 5K/s, large values > 500/s.
+
+### `test_transport_throughput.py` (Cloud Transports)
+
+Measures throughput for Pub/Sub and Kinesis transport components using mocked cloud clients.
+
+- **Virtual Partition Hashing**: Hash-to-partition throughput (100K/500K/1M keys), distribution uniformity across 16 partitions.
+- **Naming Conventions**: Topic/stream naming roundtrip throughput.
+- **WAL Publishers**: PubSubWalPublisher and KinesisWalPublisher publish throughput with mocked clients.
+- **JSON Serialization**: Serialization throughput for small/medium/large CDC payloads.
+- **E2E Pipeline**: Full WAL decode -> JSON serialize -> mock publish throughput.
 
 ## 6. Helper Reference
 

@@ -30,6 +30,38 @@ def create_event_source(
             connector_config=platform.connector,
             pipeline=pipeline,
         )
+
+    if platform.transport_mode == TransportMode.PUBSUB:
+        assert platform.pubsub is not None
+        from cdc_platform.sources.pubsub.naming import pubsub_subscription_name
+        from cdc_platform.sources.pubsub.source import PubSubEventSource
+
+        all_topics = topics_for_pipeline(pipeline, platform)
+        cdc_topics = [t for t in all_topics if not t.endswith(".dlq")]
+        subscriptions = [
+            pubsub_subscription_name(
+                platform.pubsub.project_id, t, platform.pubsub.group_id
+            )
+            for t in cdc_topics
+        ]
+        return PubSubEventSource(
+            subscriptions=subscriptions,
+            config=platform.pubsub,
+        )
+
+    if platform.transport_mode == TransportMode.KINESIS:
+        assert platform.kinesis is not None
+        from cdc_platform.sources.kinesis.naming import kinesis_stream_name
+        from cdc_platform.sources.kinesis.source import KinesisEventSource
+
+        all_topics = topics_for_pipeline(pipeline, platform)
+        cdc_topics = [t for t in all_topics if not t.endswith(".dlq")]
+        streams = [kinesis_stream_name(t) for t in cdc_topics]
+        return KinesisEventSource(
+            streams=streams,
+            config=platform.kinesis,
+        )
+
     msg = f"Unsupported transport mode: {platform.transport_mode}"
     raise ValueError(msg)
 
@@ -40,6 +72,17 @@ def create_provisioner(platform: PlatformConfig) -> Provisioner:
         from cdc_platform.sources.kafka.provisioner import KafkaProvisioner
 
         return KafkaProvisioner(platform)
+
+    if platform.transport_mode == TransportMode.PUBSUB:
+        from cdc_platform.sources.pubsub.provisioner import PubSubProvisioner
+
+        return PubSubProvisioner(platform)
+
+    if platform.transport_mode == TransportMode.KINESIS:
+        from cdc_platform.sources.kinesis.provisioner import KinesisProvisioner
+
+        return KinesisProvisioner(platform)
+
     msg = f"Unsupported transport mode: {platform.transport_mode}"
     raise ValueError(msg)
 
@@ -56,6 +99,18 @@ def create_error_router(platform: PlatformConfig) -> ErrorRouter | None:
 
         producer = create_producer(platform.kafka)
         return DLQHandler(producer, platform.dlq)
+
+    if platform.transport_mode == TransportMode.PUBSUB:
+        assert platform.pubsub is not None
+        from cdc_platform.sources.pubsub.error_router import PubSubErrorRouter
+
+        return PubSubErrorRouter(platform.pubsub, platform.dlq)
+
+    if platform.transport_mode == TransportMode.KINESIS:
+        assert platform.kinesis is not None
+        from cdc_platform.sources.kinesis.error_router import KinesisErrorRouter
+
+        return KinesisErrorRouter(platform.kinesis, platform.dlq)
 
     msg = f"Unsupported transport mode: {platform.transport_mode}"
     raise ValueError(msg)
@@ -81,5 +136,39 @@ def create_source_monitor(
             stop_on_incompatible=platform.stop_on_incompatible_schema,
             on_incompatible=on_incompatible,
         )
+
+    if platform.transport_mode == TransportMode.PUBSUB:
+        assert platform.pubsub is not None
+        from cdc_platform.sources.pubsub.monitor import PubSubSourceMonitor
+        from cdc_platform.sources.pubsub.naming import pubsub_subscription_name
+
+        all_topics = topics_for_pipeline(pipeline, platform)
+        cdc_topics = [t for t in all_topics if not t.endswith(".dlq")]
+        subscriptions = [
+            pubsub_subscription_name(
+                platform.pubsub.project_id, t, platform.pubsub.group_id
+            )
+            for t in cdc_topics
+        ]
+        return PubSubSourceMonitor(
+            config=platform.pubsub,
+            subscriptions=subscriptions,
+            monitor_interval=platform.lag_monitor_interval_seconds,
+        )
+
+    if platform.transport_mode == TransportMode.KINESIS:
+        assert platform.kinesis is not None
+        from cdc_platform.sources.kinesis.monitor import KinesisSourceMonitor
+        from cdc_platform.sources.kinesis.naming import kinesis_stream_name
+
+        all_topics = topics_for_pipeline(pipeline, platform)
+        cdc_topics = [t for t in all_topics if not t.endswith(".dlq")]
+        streams = [kinesis_stream_name(t) for t in cdc_topics]
+        return KinesisSourceMonitor(
+            config=platform.kinesis,
+            streams=streams,
+            monitor_interval=platform.lag_monitor_interval_seconds,
+        )
+
     msg = f"Unsupported transport mode: {platform.transport_mode}"
     raise ValueError(msg)

@@ -13,6 +13,19 @@ class TransportMode(StrEnum):
     """Supported event transport modes."""
 
     KAFKA = "kafka"
+    PUBSUB = "pubsub"
+    KINESIS = "kinesis"
+
+
+class KafkaAuthMechanism(StrEnum):
+    """Kafka SASL authentication mechanisms."""
+
+    NONE = "none"
+    SASL_PLAIN = "sasl_plain"
+    SASL_SCRAM_256 = "sasl_scram_256"
+    SASL_SCRAM_512 = "sasl_scram_512"
+    SASL_IAM = "sasl_iam"
+    SASL_OAUTHBEARER = "sasl_oauthbearer"
 
 
 class SourceType(StrEnum):
@@ -113,6 +126,70 @@ class KafkaConfig(BaseModel):
     poll_batch_size: int = Field(default=1, ge=1)
     deser_pool_size: int = Field(default=1, ge=1)
     commit_interval_seconds: float = Field(default=0.0, ge=0.0)
+    # Auth / security
+    security_protocol: str = "PLAINTEXT"
+    auth_mechanism: KafkaAuthMechanism = KafkaAuthMechanism.NONE
+    sasl_username: str | None = None
+    sasl_password: SecretStr | None = None
+    ssl_ca_location: str | None = None
+    ssl_certificate_location: str | None = None
+    ssl_key_location: str | None = None
+    aws_region: str | None = None
+    gcp_project_id: str | None = None
+
+    @model_validator(mode="after")
+    def check_auth_requirements(self) -> Self:
+        """Validate that auth-specific fields are present."""
+        mech = self.auth_mechanism
+        if mech == KafkaAuthMechanism.SASL_IAM and not self.aws_region:
+            msg = "aws_region is required when auth_mechanism is 'sasl_iam'"
+            raise ValueError(msg)
+        if mech in (
+            KafkaAuthMechanism.SASL_PLAIN,
+            KafkaAuthMechanism.SASL_SCRAM_256,
+            KafkaAuthMechanism.SASL_SCRAM_512,
+        ) and (not self.sasl_username or not self.sasl_password):
+            msg = (
+                "sasl_username and sasl_password are required "
+                f"when auth_mechanism is '{mech.value}'"
+            )
+            raise ValueError(msg)
+        return self
+
+
+class WalReaderConfig(BaseModel):
+    """Direct WAL reader configuration for non-Kafka transports."""
+
+    publication_name: str = "cdc_publication"
+    slot_name: str = "cdc_slot"
+    status_interval_seconds: float = Field(default=10.0, gt=0)
+    batch_size: int = Field(default=100, ge=1)
+    batch_timeout_seconds: float = Field(default=1.0, gt=0)
+
+
+class PubSubConfig(BaseModel):
+    """Google Cloud Pub/Sub transport configuration."""
+
+    project_id: str
+    ordering_enabled: bool = True
+    ack_deadline_seconds: int = Field(default=600, ge=10, le=600)
+    max_messages_per_pull: int = Field(default=100, ge=1)
+    group_id: str = "cdc-platform"
+    max_outstanding_messages: int = Field(default=1000, ge=1)
+    max_delivery_attempts: int = Field(default=5, ge=1)
+
+
+class KinesisConfig(BaseModel):
+    """Amazon Kinesis Data Streams transport configuration."""
+
+    region: str = "us-east-1"
+    shard_count: int = Field(default=1, ge=1)
+    group_id: str = "cdc-platform"
+    iterator_type: str = "TRIM_HORIZON"
+    checkpoint_table_name: str = "cdc-kinesis-checkpoints"
+    poll_interval_seconds: float = Field(default=1.0, gt=0)
+    max_records_per_shard: int = Field(default=100, ge=1)
+    dlq_stream_suffix: str = "dlq"
 
 
 class ConnectorConfig(BaseModel):
@@ -264,6 +341,9 @@ class PlatformConfig(BaseModel):
     transport_mode: TransportMode = TransportMode.KAFKA
     kafka: KafkaConfig | None = KafkaConfig()
     connector: ConnectorConfig | None = ConnectorConfig()
+    pubsub: PubSubConfig | None = None
+    kinesis: KinesisConfig | None = None
+    wal_reader: WalReaderConfig | None = None
     dlq: DLQConfig = DLQConfig()
     retry: RetryConfig = RetryConfig()
     max_buffered_messages: int = Field(default=1000, ge=1)
@@ -282,5 +362,19 @@ class PlatformConfig(BaseModel):
                 raise ValueError(msg)
             if self.connector is None:
                 msg = "connector config is required when transport_mode is 'kafka'"
+                raise ValueError(msg)
+        elif self.transport_mode == TransportMode.PUBSUB:
+            if self.pubsub is None:
+                msg = "pubsub config is required when transport_mode is 'pubsub'"
+                raise ValueError(msg)
+            if self.wal_reader is None:
+                msg = "wal_reader config is required when transport_mode is 'pubsub'"
+                raise ValueError(msg)
+        elif self.transport_mode == TransportMode.KINESIS:
+            if self.kinesis is None:
+                msg = "kinesis config is required when transport_mode is 'kinesis'"
+                raise ValueError(msg)
+            if self.wal_reader is None:
+                msg = "wal_reader config is required when transport_mode is 'kinesis'"
                 raise ValueError(msg)
         return self
