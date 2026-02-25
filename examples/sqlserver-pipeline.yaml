@@ -1,0 +1,45 @@
+# Example pipeline configuration for SQL Server CDC.
+#
+# Prerequisites on the SQL Server side (run once per database/table):
+#   EXEC sys.sp_cdc_enable_db
+#   EXEC sys.sp_cdc_enable_table @source_schema='dbo', @source_name='orders', @role_name=NULL
+#   EXEC sys.sp_cdc_enable_table @source_schema='dbo', @source_name='customers', @role_name=NULL
+#
+# SQL Server Agent must be running — it manages the CDC capture and cleanup jobs.
+# Developer or Enterprise edition required (Express does not support Agent).
+#
+# Topic naming: <prefix>.<database>.<schema>.<table>
+#   e.g.  cdc.production_db.dbo.orders
+
+pipeline_id: sqlserver-orders-cdc
+topic_prefix: cdc
+
+source:
+  source_type: sqlserver
+  host: ${CDC_SOURCE_HOST:-localhost}
+  port: ${CDC_SOURCE_PORT:-1433}
+  database: ${CDC_SOURCE_DB:-production_db}
+  username: ${CDC_SOURCE_USER:-sa}
+  password: ${CDC_SOURCE_PASSWORD}
+
+  # Tables to watch — format: <schema>.<table>
+  tables:
+    - dbo.orders
+    - dbo.customers
+
+  snapshot_mode: initial               # initial | never | when_needed | no_data
+
+sinks:
+  - sink_id: iceberg-lake
+    sink_type: iceberg
+    enabled: true
+    iceberg:
+      catalog_uri: ${ICEBERG_CATALOG_URI:-sqlite:////tmp/cdc_catalog.db}
+      warehouse: ${ICEBERG_WAREHOUSE:-file:///tmp/cdc_warehouse}
+      table_name: sqlserver_orders_cdc
+      write_mode: upsert
+      batch_size: 1000
+      auto_create_table: true
+      maintenance:
+        enabled: true
+        compaction_interval_seconds: 3600

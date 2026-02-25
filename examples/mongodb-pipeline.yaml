@@ -1,0 +1,43 @@
+# Example pipeline configuration for MongoDB CDC.
+#
+# Prerequisites on the MongoDB side:
+#   - Source must be a replica set or sharded cluster (change streams require oplog)
+#   - CDC user: read on watched databases + clusterMonitor on admin
+#   - Oplog retention sufficient for connector downtime
+#
+# Topic naming: <prefix>.<db>.<collection>  e.g. cdc.mydb.orders
+
+pipeline_id: mongo-orders-cdc
+topic_prefix: cdc
+
+source:
+  source_type: mongodb
+  host: ${CDC_SOURCE_HOST:-localhost}
+  port: ${CDC_SOURCE_PORT:-27017}
+  database: ${CDC_SOURCE_DB:-mydb}     # used for logging/identification only
+  username: ${CDC_SOURCE_USER:-cdc_user}
+  password: ${CDC_SOURCE_PASSWORD:-cdc_password}
+
+  # Collections to watch — format: <database>.<collection>
+  tables:
+    - mydb.orders
+    - mydb.customers
+
+  snapshot_mode: initial               # initial | never | when_needed | no_data
+
+  # Replica set name — required for direct connections; omit for Atlas (SRV URIs)
+  replica_set_name: ${CDC_REPLICA_SET:-rs0}
+  # MongoDB database used to authenticate the CDC user (default: admin)
+  # auth_source: admin
+
+sinks:
+  - sink_id: iceberg-lake
+    sink_type: iceberg
+    enabled: true
+    iceberg:
+      catalog_uri: ${ICEBERG_CATALOG_URI:-sqlite:////tmp/cdc_catalog.db}
+      warehouse: ${ICEBERG_WAREHOUSE:-file:///tmp/cdc_warehouse}
+      table_name: mongo_orders_cdc
+      write_mode: append
+      batch_size: 500
+      auto_create_table: true

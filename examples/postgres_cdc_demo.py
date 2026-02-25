@@ -17,7 +17,7 @@ from rich.console import Console
 
 from cdc_platform.config.defaults import build_pipeline_config
 from cdc_platform.config.models import PlatformConfig
-from cdc_platform.observability.health import Status, check_platform_health
+from cdc_platform.observability.health import check_platform_health
 from cdc_platform.sources.debezium.client import DebeziumClient
 from cdc_platform.sources.debezium.config import connector_name
 from cdc_platform.streaming.consumer import CDCConsumer
@@ -62,9 +62,7 @@ def main() -> None:
 
     # 4. Consume CDC events
     cdc_topics = [
-        t
-        for t in topics_for_pipeline(pipeline, platform)
-        if not t.endswith(".dlq")
+        t for t in topics_for_pipeline(pipeline, platform) if not t.endswith(".dlq")
     ]
     console.print(f"[yellow]Consuming from:[/yellow] {cdc_topics}")
     console.print("[dim]Press Ctrl+C to stop[/dim]\n")

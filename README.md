@@ -6,7 +6,11 @@ A modular, extensible CDC platform for streaming changes from operational databa
 
 ## Overview
 
-CDC Platform owns the full pipeline from source database to sink destination. It provisions transport resources, deploys source connectors, manages consumer groups and offset lifecycle, monitors schemas, and routes events to configurable sinks — webhooks, PostgreSQL replicas, and Apache Iceberg lakehouse tables. The platform uses a **transport-agnostic architecture** — the core pipeline is decoupled from any specific event transport through protocol-based abstractions. Kafka is the default transport (including MSK and Confluent Cloud), with the architecture designed to support additional transports (Pub/Sub, embedded PG) without modifying the core pipeline. Events are delivered with exactly-once guarantees through min-watermark offset commits and idempotent writes.
+CDC Platform owns the full pipeline from source database to sink destination. It provisions transport resources, deploys source connectors, manages consumer groups and offset lifecycle, monitors schemas, and routes events to configurable sinks — webhooks, PostgreSQL replicas, and Apache Iceberg lakehouse tables.
+
+Supported source databases: **PostgreSQL** (logical replication), **MySQL** (binlog), **MongoDB** (change streams), and **SQL Server** (CDC tables). Each is configured with a single `source_type` field; the platform handles connector deployment, topic naming, and snapshot behavior automatically.
+
+The platform uses a **transport-agnostic architecture** — the core pipeline is decoupled from any specific event transport through protocol-based abstractions. Kafka is the default transport (including MSK and Confluent Cloud), with the architecture designed to support additional transports (Pub/Sub, embedded PG) without modifying the core pipeline. Events are delivered with exactly-once guarantees through min-watermark offset commits and idempotent writes.
 
 ```
  ┌─────────────────── CDC Platform ──────────────────────────────┐
@@ -30,7 +34,8 @@ CDC Platform owns the full pipeline from source database to sink destination. It
  └───────────────────────────────────────────────────────────────┘
          ▲                                     │
     source DB                          sink destinations:
-   (Postgres)                       Webhook, Postgres, Iceberg
+  Postgres · MySQL                  Webhook, Postgres, Iceberg
+  MongoDB · SQL Server
 ```
 
 The source database and sink destinations are the only components outside the platform boundary. The platform provisions transport resources, deploys source connectors, manages consumer groups and offsets, monitors schemas, and routes events to sinks. The transport layer is abstracted behind protocols (`EventSource`, `Provisioner`, `ErrorRouter`, `SourceMonitor`), allowing the core pipeline to work with any event transport.
@@ -92,15 +97,26 @@ docker run --rm \
 make up
 ```
 
-This starts PostgreSQL (with logical replication), Kafka (KRaft mode), Schema Registry, Debezium Connect, and Kafka UI.
+This starts the base stack: PostgreSQL (logical replication pre-configured), Kafka (KRaft mode), Schema Registry, Debezium Connect (all 4 source connectors installed), and Kafka UI.
 
-| Service         | Port  | URL                          |
-|-----------------|-------|------------------------------|
-| PostgreSQL      | 5432  | `localhost:5432`             |
-| Kafka           | 9092  | `localhost:9092`             |
-| Schema Registry | 8081  | `http://localhost:8081`      |
-| Kafka Connect   | 8083  | `http://localhost:8083`      |
-| Kafka UI        | 8080  | `http://localhost:8080`      |
+| Service         | Port  | URL                          | Compose file |
+|-----------------|-------|------------------------------|--------------|
+| PostgreSQL      | 5432  | `localhost:5432`             | base         |
+| Kafka           | 9092  | `localhost:9092`             | base         |
+| Schema Registry | 8081  | `http://localhost:8081`      | base         |
+| Kafka Connect   | 8083  | `http://localhost:8083`      | base         |
+| Kafka UI        | 8080  | `http://localhost:8080`      | base         |
+| MongoDB         | 27017 | `localhost:27017`            | `docker/docker-compose.mongodb.yml` |
+| SQL Server      | 1433  | `localhost:1433`             | `docker/docker-compose.sqlserver.yml` |
+
+To start with MongoDB or SQL Server:
+```bash
+# MongoDB (single-node replica set, CDC pre-seeded)
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.mongodb.yml up -d
+
+# SQL Server (Developer edition, CDC enabled on cdc_demo)
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.sqlserver.yml up -d
+```
 
 ### 2. Install the platform
 
@@ -223,15 +239,19 @@ The source database that CDC captures changes from. The platform connects to it 
 
 | Field              | Default         | Description                              |
 |--------------------|-----------------|------------------------------------------|
-| `source_type`      | `postgres`      | Source database type (`postgres`, `mysql`) |
+| `source_type`      | `postgres`      | Source type: `postgres` \| `mysql` \| `mongodb` \| `sqlserver` |
 | `host`             | `localhost`     | Database host                            |
-| `port`             | `5432`          | Database port                            |
+| `port`             | `5432`          | Database port (postgres: 5432, mysql: 3306, mongodb: 27017, sqlserver: 1433) |
 | `database`         | *(required)*    | Database name                            |
 | `username`         | `cdc_user`      | Database user                            |
 | `password`         | `cdc_password`  | Database password                        |
-| `tables`           | `[]`            | Schema-qualified tables (e.g. `public.customers`) |
-| `slot_name`        | `cdc_slot`      | PostgreSQL replication slot              |
-| `snapshot_mode`    | `initial`       | Debezium snapshot mode                   |
+| `tables`           | `[]`            | Tables/collections to capture. Format: `schema.table` (postgres/mysql/sqlserver) or `db.collection` (mongodb) |
+| `snapshot_mode`    | `initial`       | Debezium snapshot mode: `initial` \| `never` \| `when_needed` \| `no_data` |
+| `slot_name`        | `cdc_slot`      | **PostgreSQL only** — replication slot name; must be unique per pipeline |
+| `publication_name` | `cdc_publication` | **PostgreSQL only** — publication name |
+| `mysql_server_id`  | `1`             | **MySQL only** — server ID; must be unique across the replication topology |
+| `replica_set_name` | `None`          | **MongoDB only** — replica set name (e.g. `rs0`); omit for Atlas/SRV URIs |
+| `auth_source`      | `admin`         | **MongoDB only** — authentication database |
 
 ### Platform internals
 
@@ -370,7 +390,7 @@ The source database and sink destinations are the only things outside the platfo
 
 ### Pipeline lifecycle
 
-1. **Transport provisioning** — The `Provisioner` creates transport resources. For Kafka: auto-creates topics based on source tables and topic prefix (e.g. `cdc.public.customers`, `cdc.public.customers.dlq`) and registers a Debezium PostgreSQL connector via the Kafka Connect REST API.
+1. **Transport provisioning** — The `Provisioner` creates transport resources. For Kafka: auto-creates topics based on source tables and topic prefix (e.g. `cdc.public.customers`, `cdc.public.customers.dlq`) and registers the appropriate Debezium connector (PostgreSQL, MySQL, MongoDB, or SQL Server) via the Kafka Connect REST API.
 2. **Error router initialization** — The `ErrorRouter` (DLQ handler) is created for routing failed events.
 3. **Sink initialization** — All enabled sinks are started (connections opened, clients initialized).
 4. **Event source creation** — The `EventSource` is created for the configured transport mode.
@@ -520,10 +540,16 @@ Other sinks are not affected by one sink's failure.
 
 ### Topic naming
 
-| Topic                       | Purpose                    |
-|-----------------------------|----------------------------|
-| `{prefix}.{schema}.{table}` | CDC events (e.g. `cdc.public.customers`) |
-| `{prefix}.{schema}.{table}.dlq` | Dead letter queue     |
+Topic format varies by source type to match Debezium's connector conventions:
+
+| Source type | CDC topic format | Example |
+|---|---|---|
+| `postgres` | `{prefix}.{schema}.{table}` | `cdc.public.customers` |
+| `mysql` | `{prefix}.{db}.{table}` | `cdc.mydb.customers` |
+| `mongodb` | `{prefix}.{db}.{collection}` | `cdc.mydb.events` |
+| `sqlserver` | `{prefix}.{database}.{schema}.{table}` | `cdc.prod_db.dbo.customers` |
+
+DLQ topic: `{cdc_topic}.{dlq_suffix}` (default suffix: `dlq`), e.g. `cdc.public.customers.dlq`.
 
 ## Project Structure
 
@@ -574,13 +600,25 @@ src/cdc_platform/
     └── metrics.py                  # Consumer lag metrics + LagMonitor periodic reporter
 
 Dockerfile                          # Pipeline worker image (multi-stage, non-root)
-Dockerfile.connect                  # Kafka Connect + Debezium plugins image
+Dockerfile.connect                  # Kafka Connect + all four Debezium connector plugins
 docker/
-├── docker-compose.yml              # Full local stack
+├── docker-compose.yml              # Base local stack (Kafka, Schema Registry, Connect, PostgreSQL)
+├── docker-compose.mongodb.yml      # Overlay: adds MongoDB replica set + seed data
+├── docker-compose.sqlserver.yml    # Overlay: adds SQL Server + CDC-enabled cdc_demo database
 ├── connect/
 │   └── Dockerfile                  # Custom Kafka Connect image with Confluent Avro converter JARs
-└── postgres/
-    └── init.sql                    # Demo schema (customers + orders)
+├── postgres/
+│   └── init.sql                    # Demo schema (customers + orders) with logical replication
+├── mongodb/
+│   └── setup.sh                    # Replica set init + seed products/orders collections
+└── sqlserver/
+    └── init.sql                    # sys.sp_cdc_enable_db/table + seed customers table
+
+examples/
+├── platform.yaml                   # Production platform config override
+├── demo-config.yaml                # PostgreSQL demo pipeline (webhook + postgres + iceberg sinks)
+├── mongodb-pipeline.yaml           # MongoDB CDC pipeline example
+└── sqlserver-pipeline.yaml         # SQL Server CDC pipeline example
 
 helm/cdc-platform/                  # Platform Helm chart (Kafka, Schema Registry, Kafka Connect)
 ├── Chart.yaml

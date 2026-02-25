@@ -162,18 +162,33 @@ pipeline_id: orders-cdc        # Unique identifier for this pipeline
 topic_prefix: cdc               # Kafka topic prefix (topics: cdc.public.orders)
 
 source:
-  source_type: postgres          # postgres or mysql
+  # Supported values: postgres | mysql | mongodb | sqlserver
+  source_type: postgres
   host: ${CDC_SOURCE_HOST}       # Env var substitution supported
-  port: 5432
+  port: 5432                     # postgres: 5432 | mysql: 3306 | mongodb: 27017 | sqlserver: 1433
   database: ${CDC_SOURCE_DB}
   username: ${CDC_SOURCE_USER}
   password: ${CDC_SOURCE_PASSWORD}
   tables:
+    # postgres/mysql/sqlserver: schema-qualified  → public.orders, dbo.orders
+    # mongodb:                  db-qualified       → mydb.orders
     - public.orders
     - public.order_items
-  slot_name: orders_cdc_slot     # Unique per pipeline to avoid conflicts
+  snapshot_mode: initial         # initial | never | when_needed | no_data
+
+  # -- PostgreSQL-specific (ignored for other source types) --
+  slot_name: orders_cdc_slot     # Must be unique per pipeline
   publication_name: orders_pub
-  snapshot_mode: initial         # initial, never, when_needed, no_data
+
+  # -- MySQL-specific --
+  # mysql_server_id: 1           # Must be unique across the replication topology
+
+  # -- MongoDB-specific --
+  # replica_set_name: rs0        # Required for replica sets; omit for Atlas/SRV URIs
+  # auth_source: admin
+
+  # -- SQL Server-specific --
+  # (no extra fields; CDC must be pre-enabled on the DB and each table)
 
 sinks:
   - sink_id: iceberg-lake
@@ -357,7 +372,10 @@ Pipelines (independent):
   └── inventory-cdc (Deployment + ConfigMap)
 ```
 
-Important: each pipeline must use a **unique `slot_name`** in its source config to avoid conflicts on the PostgreSQL replication slot.
+Important: source-type-specific uniqueness requirements apply per pipeline:
+- **PostgreSQL** — `slot_name` must be unique per pipeline (replication slot conflicts crash the connector)
+- **MySQL** — `mysql_server_id` must be unique across the entire MySQL replication topology
+- **MongoDB / SQL Server** — no per-pipeline uniqueness constraint beyond `pipeline_id` and `topic_prefix`
 
 ### Pipeline Lifecycle
 
@@ -514,11 +532,35 @@ cdc run pipeline.yaml
 - [ ] Retention set appropriately (`retention.ms`, `retention.bytes`)
 - [ ] Monitor under-replicated partitions
 
-### Debezium
-- [ ] Unique `slot_name` per pipeline (avoid slot conflicts)
-- [ ] WAL retention configured (`wal_keep_size` or replication slot monitoring)
-- [ ] Heartbeat table for low-traffic tables (prevents WAL bloat from inactive slots)
+### Debezium (all source types)
 - [ ] `snapshot_mode: initial` for first deploy, `never` for subsequent deploys
+- [ ] Kafka Connect image built from `Dockerfile.connect` — includes all four connector plugins
+
+#### PostgreSQL prerequisites
+- [ ] `wal_level = logical` on the source instance
+- [ ] Unique `slot_name` per pipeline (slot name conflicts cause connector failure)
+- [ ] WAL retention configured (`wal_keep_size` or replication slot monitoring) — inactive slots block WAL reclamation
+- [ ] Heartbeat table created for low-traffic sources (prevents WAL bloat)
+- [ ] CDC user granted `REPLICATION` privilege and `SELECT` on watched tables
+
+#### MySQL prerequisites
+- [ ] `binlog_format = ROW` on the source instance
+- [ ] `binlog_row_image = FULL` (required for before-images on UPDATE/DELETE)
+- [ ] `mysql_server_id` unique across all MySQL replicas in the topology
+- [ ] CDC user granted `SELECT`, `RELOAD`, `SHOW DATABASES`, `REPLICATION SLAVE`, `REPLICATION CLIENT`
+
+#### MongoDB prerequisites
+- [ ] Source must be a **replica set or sharded cluster** — change streams do not work on standalone nodes
+- [ ] `replica_set_name` set in pipeline config (or use an SRV connection string)
+- [ ] CDC user granted `read` on watched databases and `clusterMonitor` on `admin`
+- [ ] Oplog retention sufficient to survive connector downtime (`storage.oplogMinRetentionHours`)
+
+#### SQL Server prerequisites
+- [ ] SQL Server Agent must be running (manages CDC capture and cleanup jobs)
+- [ ] CDC enabled on the database: `EXEC sys.sp_cdc_enable_db`
+- [ ] CDC enabled on each captured table: `EXEC sys.sp_cdc_enable_table @source_schema, @source_name, @role_name = NULL`
+- [ ] CDC user granted `db_datareader` and `EXECUTE` on CDC stored procedures (`cdc` schema)
+- [ ] Developer or Enterprise edition required (Express does not support SQL Server Agent)
 
 ### Iceberg
 - [ ] Catalog URI and warehouse credentials configured
@@ -556,8 +598,14 @@ cdc run pipeline.yaml
 For local development and testing, use the existing Docker Compose stack:
 
 ```bash
-# Start the full local stack (Kafka, Schema Registry, Connect, PostgreSQL)
+# Start the base stack (Kafka, Schema Registry, Connect, PostgreSQL)
 make up
+
+# Add MongoDB source (single-node replica set):
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.mongodb.yml up -d
+
+# Add SQL Server source (Developer edition + CDC enabled):
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.sqlserver.yml up -d
 
 # Run a pipeline locally against the stack
 cdc run examples/demo-config.yaml
@@ -577,15 +625,17 @@ platform:
   topicReplicationFactor: 3      # replication factor for auto-created topics
 ```
 
-The local stack includes:
+The base local stack includes:
 
-| Service | Port | Purpose |
-|---------|------|---------|
-| PostgreSQL | 5432 | Source database with logical replication |
-| Kafka | 9092 | Message broker (KRaft mode) |
-| Schema Registry | 8081 | Avro schema storage |
-| Kafka Connect | 8083 | Debezium connector hosting |
-| Kafka UI | 8080 | Web UI for topic inspection |
+| Service | Port | Compose file | Purpose |
+|---------|------|--------------|---------|
+| PostgreSQL | 5432 | `docker-compose.yml` | Source database (logical replication pre-configured) |
+| Kafka | 9092 | `docker-compose.yml` | Message broker (KRaft mode) |
+| Schema Registry | 8081 | `docker-compose.yml` | Avro schema storage |
+| Kafka Connect | 8083 | `docker-compose.yml` | Debezium connector hosting (all 4 connectors installed) |
+| Kafka UI | 8080 | `docker-compose.yml` | Web UI for topic inspection |
+| MongoDB | 27017 | `docker-compose.mongodb.yml` | Source database (single-node replica set) |
+| SQL Server | 1433 | `docker-compose.sqlserver.yml` | Source database (CDC pre-enabled on `cdc_demo`) |
 
 ### Quick Start: Zero to Running Pipeline
 

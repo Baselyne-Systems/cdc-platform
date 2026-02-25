@@ -1,14 +1,21 @@
-# Platform-managed defaults for PostgreSQL CDC pipelines.
-# Users override pipeline_id, source.database, and source.tables.
+# Platform-managed defaults for CDC pipelines.
+# Users override pipeline_id, source.source_type, source.database, and source.tables.
+#
+# Source-type-specific fields:
+#   postgres:   slot_name, publication_name (defaults below)
+#   mysql:      mysql_server_id (default: 1)
+#   mongodb:    replica_set_name, auth_source (default: "admin")
+#   sqlserver:  no extra fields; CDC must be pre-enabled on the DB
 
 topic_prefix: cdc
 
 source:
-  source_type: postgres
-  port: 5432
+  source_type: postgres   # override to: mysql | mongodb | sqlserver
+  port: 5432              # default port for postgres; set explicitly for other types
   username: cdc_user
+  snapshot_mode: initial
+  # PostgreSQL-specific defaults (ignored for other source types)
   slot_name: cdc_slot
   publication_name: cdc_publication
-  snapshot_mode: initial
 
 sinks: []
