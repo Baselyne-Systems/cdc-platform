@@ -69,7 +69,9 @@ def _wait_for_kafka(bootstrap: str = "localhost:9092", *, timeout: int = 120) ->
     raise TimeoutError(f"Kafka at {bootstrap} not ready after {timeout}s")
 
 
-def _wait_for_mongodb(host: str = "localhost", port: int = 27017, *, timeout: int = 90) -> None:
+def _wait_for_mongodb(
+    host: str = "localhost", port: int = 27017, *, timeout: int = 90
+) -> None:
     """Wait until MongoDB replica set has a PRIMARY."""
     import subprocess as sp
 
@@ -197,7 +199,10 @@ def _raw_consume(
                 continue
             if msg.error():
                 code = msg.error().code()
-                if code in (KafkaError._PARTITION_EOF, KafkaError.UNKNOWN_TOPIC_OR_PART):
+                if code in (
+                    KafkaError._PARTITION_EOF,
+                    KafkaError.UNKNOWN_TOPIC_OR_PART,
+                ):
                     continue
                 raise Exception(msg.error())
             if msg.value() is not None:
@@ -270,8 +275,7 @@ class TestMongoDBCDC:
         """Initial snapshot should emit at least the 2 seed documents."""
         payloads = _raw_consume(PRODUCTS_TOPIC, timeout=60, max_messages=10)
         assert len(payloads) >= 2, (
-            f"Expected ≥2 snapshot messages on {PRODUCTS_TOPIC}, "
-            f"got {len(payloads)}"
+            f"Expected ≥2 snapshot messages on {PRODUCTS_TOPIC}, got {len(payloads)}"
         )
 
     def test_insert_captured(self, docker_mongodb_services, _register_mongo_connector):

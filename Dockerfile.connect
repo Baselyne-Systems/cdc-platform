@@ -1,11 +1,20 @@
 # Kafka Connect image with Debezium connector plugins pre-installed.
 # Used by the platform Helm chart for the Kafka Connect Deployment.
 #
+# Supported source types and their Debezium connectors:
+#   postgres   → debezium/debezium-connector-postgresql
+#   mysql      → debezium/debezium-connector-mysql
+#   mongodb    → debezium/debezium-connector-mongodb
+#   sqlserver  → debezium/debezium-connector-sqlserver
+#
 # Usage:
 #   docker build -f Dockerfile.connect -t cdc-kafka-connect .
 
 FROM confluentinc/cp-kafka-connect-base:7.7.1
 
-# Install Debezium Postgres and MySQL connector plugins via confluent-hub.
+# Install all supported Debezium connector plugins via confluent-hub.
+# Each install is on its own line for layer caching and readable diffs.
 RUN confluent-hub install --no-prompt debezium/debezium-connector-postgresql:latest && \
-    confluent-hub install --no-prompt debezium/debezium-connector-mysql:latest
+    confluent-hub install --no-prompt debezium/debezium-connector-mysql:latest && \
+    confluent-hub install --no-prompt debezium/debezium-connector-mongodb:latest && \
+    confluent-hub install --no-prompt debezium/debezium-connector-sqlserver:latest

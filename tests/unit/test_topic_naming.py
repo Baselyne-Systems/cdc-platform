@@ -71,7 +71,9 @@ class TestTopicsForPipeline:
                 tables=["mydb.customers", "mydb.orders"],
             ),
         )
-        topics = topics_for_pipeline(pipeline, PlatformConfig(dlq=DLQConfig(enabled=False)))
+        topics = topics_for_pipeline(
+            pipeline, PlatformConfig(dlq=DLQConfig(enabled=False))
+        )
         assert topics == ["cdc.mydb.customers", "cdc.mydb.orders"]
 
     def test_mongodb_topic_format(self):
@@ -85,7 +87,9 @@ class TestTopicsForPipeline:
                 tables=["cdc_demo.products", "cdc_demo.orders"],
             ),
         )
-        topics = topics_for_pipeline(pipeline, PlatformConfig(dlq=DLQConfig(enabled=False)))
+        topics = topics_for_pipeline(
+            pipeline, PlatformConfig(dlq=DLQConfig(enabled=False))
+        )
         assert topics == ["cdc.cdc_demo.products", "cdc.cdc_demo.orders"]
 
     def test_sqlserver_topic_format(self):
@@ -103,7 +107,9 @@ class TestTopicsForPipeline:
                 tables=["dbo.customers", "sales.orders"],
             ),
         )
-        topics = topics_for_pipeline(pipeline, PlatformConfig(dlq=DLQConfig(enabled=False)))
+        topics = topics_for_pipeline(
+            pipeline, PlatformConfig(dlq=DLQConfig(enabled=False))
+        )
         assert topics == [
             "cdc.cdc_demo.dbo.customers",
             "cdc.cdc_demo.sales.orders",
@@ -128,8 +134,8 @@ class TestTopicsForPipeline:
     def test_custom_topic_prefix_applied_to_all_sources(self):
         for source_type, kwargs in [
             (SourceType.POSTGRES, {"tables": ["public.t"]}),
-            (SourceType.MYSQL,    {"tables": ["db.t"]}),
-            (SourceType.MONGODB,  {"tables": ["db.t"], "port": 27017}),
+            (SourceType.MYSQL, {"tables": ["db.t"]}),
+            (SourceType.MONGODB, {"tables": ["db.t"], "port": 27017}),
             (SourceType.SQLSERVER, {"tables": ["dbo.t"], "port": 1433}),
         ]:
             pipeline = PipelineConfig(

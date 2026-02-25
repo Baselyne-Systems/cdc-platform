@@ -136,13 +136,19 @@ class TestMongoDBConnectorConfig:
 
     def test_connector_class(self, mongo_pipeline: PipelineConfig):
         cfg = build_mongodb_connector_config(mongo_pipeline, PlatformConfig())
-        assert cfg["connector.class"] == "io.debezium.connector.mongodb.MongoDbConnector"
+        assert (
+            cfg["connector.class"] == "io.debezium.connector.mongodb.MongoDbConnector"
+        )
 
-    def test_connection_string_contains_host_and_port(self, mongo_pipeline: PipelineConfig):
+    def test_connection_string_contains_host_and_port(
+        self, mongo_pipeline: PipelineConfig
+    ):
         cfg = build_mongodb_connector_config(mongo_pipeline, PlatformConfig())
         assert "mongo-host:27017" in cfg["mongodb.connection.string"]
 
-    def test_connection_string_contains_replica_set(self, mongo_pipeline: PipelineConfig):
+    def test_connection_string_contains_replica_set(
+        self, mongo_pipeline: PipelineConfig
+    ):
         cfg = build_mongodb_connector_config(mongo_pipeline, PlatformConfig())
         assert "replicaSet=rs0" in cfg["mongodb.connection.string"]
 
@@ -223,7 +229,10 @@ class TestSQLServerConnectorConfig:
 
     def test_connector_class(self, sqlserver_pipeline: PipelineConfig):
         cfg = build_sqlserver_connector_config(sqlserver_pipeline, PlatformConfig())
-        assert cfg["connector.class"] == "io.debezium.connector.sqlserver.SqlServerConnector"
+        assert (
+            cfg["connector.class"]
+            == "io.debezium.connector.sqlserver.SqlServerConnector"
+        )
 
     def test_host_and_port(self, sqlserver_pipeline: PipelineConfig):
         cfg = build_sqlserver_connector_config(sqlserver_pipeline, PlatformConfig())

@@ -105,7 +105,7 @@ kafkaConnect:
       memory: 1Gi
 ```
 
-The Kafka Connect image (`Dockerfile.connect`) extends `confluentinc/cp-kafka-connect-base` with Debezium PostgreSQL and MySQL connector plugins pre-installed.
+The Kafka Connect image (`Dockerfile.connect`) extends `confluentinc/cp-kafka-connect-base` with all four Debezium connector plugins pre-installed: PostgreSQL, MySQL, MongoDB, and SQL Server.
 
 ### Using Managed Services Instead
 
@@ -139,7 +139,7 @@ cdc health --platform-config platform.yaml
 
 ### Kafka Connect with Debezium
 
-The `Dockerfile.connect` image ships with Debezium PostgreSQL and MySQL connectors. To add custom connectors:
+The `Dockerfile.connect` image ships with Debezium connectors for PostgreSQL, MySQL, MongoDB, and SQL Server. To add custom connectors:
 
 1. Create a new Dockerfile extending `ghcr.io/baselyne-systems/cdc-kafka-connect`:
    ```dockerfile

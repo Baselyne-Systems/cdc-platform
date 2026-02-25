@@ -91,10 +91,20 @@ def _wait_for_sqlserver(*, timeout: int = 120) -> None:
         try:
             result = subprocess.run(
                 [
-                    "docker", "exec", "cdc-sqlserver",
+                    "docker",
+                    "exec",
+                    "cdc-sqlserver",
                     _SQLCMD,
-                    "-S", "localhost", "-U", _CDC_USER, "-P", _SA_PASSWORD,
-                    "-Q", "SELECT 1", "-No", "-b",
+                    "-S",
+                    "localhost",
+                    "-U",
+                    _CDC_USER,
+                    "-P",
+                    _SA_PASSWORD,
+                    "-Q",
+                    "SELECT 1",
+                    "-No",
+                    "-b",
                 ],
                 capture_output=True,
                 timeout=15,
@@ -118,10 +128,22 @@ def _wait_for_sqlserver_cdc_enabled(*, timeout: int = 60) -> None:
         try:
             result = subprocess.run(
                 [
-                    "docker", "exec", "cdc-sqlserver",
+                    "docker",
+                    "exec",
+                    "cdc-sqlserver",
                     _SQLCMD,
-                    "-S", "localhost", "-U", _CDC_USER, "-P", _SA_PASSWORD,
-                    "-Q", query, "-No", "-b", "-h", "-1",
+                    "-S",
+                    "localhost",
+                    "-U",
+                    _CDC_USER,
+                    "-P",
+                    _SA_PASSWORD,
+                    "-Q",
+                    query,
+                    "-No",
+                    "-b",
+                    "-h",
+                    "-1",
                 ],
                 capture_output=True,
                 text=True,
@@ -241,7 +263,10 @@ def _consume_messages(
                 continue
             if msg.error():
                 code = msg.error().code()
-                if code in (KafkaError._PARTITION_EOF, KafkaError.UNKNOWN_TOPIC_OR_PART):
+                if code in (
+                    KafkaError._PARTITION_EOF,
+                    KafkaError.UNKNOWN_TOPIC_OR_PART,
+                ):
                     continue
                 raise Exception(msg.error())
             raw = msg.value()
@@ -259,14 +284,22 @@ def _sqlcmd(query: str) -> None:
     """Execute a T-SQL statement against cdc_demo via sqlcmd inside Docker."""
     subprocess.run(
         [
-            "docker", "exec", "cdc-sqlserver",
+            "docker",
+            "exec",
+            "cdc-sqlserver",
             _SQLCMD,
-            "-S", "localhost",
-            "-U", _CDC_USER,
-            "-P", _SA_PASSWORD,
-            "-d", "cdc_demo",
-            "-Q", query,
-            "-No", "-b",
+            "-S",
+            "localhost",
+            "-U",
+            _CDC_USER,
+            "-P",
+            _SA_PASSWORD,
+            "-d",
+            "cdc_demo",
+            "-Q",
+            query,
+            "-No",
+            "-b",
         ],
         check=True,
         capture_output=True,
@@ -286,8 +319,7 @@ class TestSQLServerCDC:
         """The initial snapshot should emit events for the 2 seed rows."""
         messages = _consume_messages(CUSTOMERS_TOPIC, timeout=60, max_messages=10)
         assert len(messages) >= 2, (
-            f"Expected ≥2 snapshot messages on {CUSTOMERS_TOPIC}, "
-            f"got {len(messages)}"
+            f"Expected ≥2 snapshot messages on {CUSTOMERS_TOPIC}, got {len(messages)}"
         )
         emails = {
             m.get("after", {}).get("email")
@@ -328,9 +360,7 @@ class TestSQLServerCDC:
         self, docker_sqlserver_services, _register_sqlserver_connector
     ):
         """A DELETE should produce a CDC event with op='d' (delete)."""
-        _sqlcmd(
-            "DELETE FROM dbo.customers WHERE email = 'charlie@example.com'"
-        )
+        _sqlcmd("DELETE FROM dbo.customers WHERE email = 'charlie@example.com'")
         messages = _consume_messages(CUSTOMERS_TOPIC, timeout=30, max_messages=5)
         deletes = [m for m in messages if m.get("op") == "d"]
         assert len(deletes) >= 1
