@@ -1,0 +1,26 @@
+# Platform config for Amazon Kinesis Data Streams transport
+# Uses WAL reader (direct PG logical replication) instead of Debezium
+transport_mode: kinesis
+
+kinesis:
+  region: "us-east-1"
+  shard_count: 2
+  group_id: "cdc-platform"
+  iterator_type: "TRIM_HORIZON"
+  checkpoint_table_name: "cdc-kinesis-checkpoints"
+  poll_interval_seconds: 1.0
+  max_records_per_shard: 100
+  dlq_stream_suffix: "dlq"
+
+wal_reader:
+  publication_name: "cdc_publication"
+  slot_name: "cdc_slot"
+  status_interval_seconds: 10
+  batch_size: 100
+  batch_timeout_seconds: 1.0
+
+dlq:
+  enabled: true
+
+max_buffered_messages: 1000
+health_port: 8080

@@ -1,0 +1,23 @@
+# Platform config for Amazon MSK with IAM authentication
+transport_mode: kafka
+
+kafka:
+  bootstrap_servers: "b-1.msk-cluster.abcdef.c2.kafka.us-east-1.amazonaws.com:9098"
+  schema_registry_url: "https://schema-registry.example.com:8081"
+  group_id: "cdc-platform"
+  security_protocol: "SASL_SSL"
+  auth_mechanism: "sasl_iam"
+  aws_region: "us-east-1"
+  # SSL (Amazon Trust Services CA is usually pre-installed)
+  # ssl_ca_location: "/etc/ssl/certs/AmazonRootCA1.pem"
+  topic_num_partitions: 3
+  topic_replication_factor: 3
+
+connector:
+  connect_url: "http://kafka-connect:8083"
+  timeout_seconds: 30
+
+dlq:
+  enabled: true
+  topic_suffix: "dlq"
+  max_retries: 3

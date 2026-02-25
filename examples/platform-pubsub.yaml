@@ -1,0 +1,26 @@
+# Platform config for Google Cloud Pub/Sub transport
+# Uses WAL reader (direct PG logical replication) instead of Debezium
+transport_mode: pubsub
+
+pubsub:
+  project_id: "my-gcp-project"
+  ordering_enabled: true
+  ack_deadline_seconds: 600
+  max_messages_per_pull: 100
+  group_id: "cdc-platform"
+  max_outstanding_messages: 1000
+  max_delivery_attempts: 5
+
+wal_reader:
+  publication_name: "cdc_publication"
+  slot_name: "cdc_slot"
+  status_interval_seconds: 10
+  batch_size: 100
+  batch_timeout_seconds: 1.0
+
+dlq:
+  enabled: true
+  topic_suffix: "dlq"
+
+max_buffered_messages: 1000
+health_port: 8080

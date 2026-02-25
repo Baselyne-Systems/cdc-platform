@@ -1,0 +1,19 @@
+# Platform config for GCP Managed Kafka with OAuth authentication
+transport_mode: kafka
+
+kafka:
+  bootstrap_servers: "bootstrap.my-kafka-cluster.us-central1.managedkafka.my-project.cloud.goog:9092"
+  schema_registry_url: "http://schema-registry:8081"
+  group_id: "cdc-platform"
+  security_protocol: "SASL_SSL"
+  auth_mechanism: "sasl_oauthbearer"
+  gcp_project_id: "my-gcp-project"
+  topic_num_partitions: 3
+  topic_replication_factor: 3
+
+connector:
+  connect_url: "http://kafka-connect:8083"
+
+dlq:
+  enabled: true
+  topic_suffix: "dlq"
