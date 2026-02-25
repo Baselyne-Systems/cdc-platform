@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import time
 from typing import Any
 
 import structlog
@@ -69,6 +71,25 @@ class PostgresSink:
             target_table=self._pg_config.target_table,
         )
 
+    def _reconnect_sync(self) -> None:
+        """Attempt to re-establish the PostgreSQL connection (synchronous)."""
+        import psycopg2
+
+        try:
+            if self._conn is not None:
+                self._conn.close()
+        except Exception:
+            pass
+        self._conn = psycopg2.connect(
+            host=self._pg_config.host,
+            port=self._pg_config.port,
+            dbname=self._pg_config.database,
+            user=self._pg_config.username,
+            password=self._pg_config.password.get_secret_value(),
+        )
+        self._conn.autocommit = False
+        logger.info("postgres_sink.reconnected", sink_id=self.sink_id)
+
     async def write(
         self,
         key: dict[str, Any] | None,
@@ -107,6 +128,8 @@ class PostgresSink:
             reraise=True,
         )
         def _insert() -> None:
+            import psycopg2
+
             try:
                 assert self._conn is not None
                 cur = self._conn.cursor()
@@ -124,22 +147,34 @@ class PostgresSink:
                 cur.executemany(sql, batch)
                 self._conn.commit()
                 cur.close()
+            except psycopg2.OperationalError:
+                # Connection is stale/dead — reconnect before next retry
+                logger.warning(
+                    "postgres_sink.connection_lost",
+                    sink_id=self.sink_id,
+                )
+                self._reconnect_sync()
+                raise
             except Exception:
-                self._conn.rollback()
+                with contextlib.suppress(Exception):
+                    self._conn.rollback()
                 raise
 
         loop = asyncio.get_running_loop()
+        t0 = time.monotonic()
         await loop.run_in_executor(None, _insert)
+        elapsed_ms = (time.monotonic() - t0) * 1000
 
         for row in batch:
             key_tp = (row[2], row[3])  # (topic, partition)
             if row[4] > self._flushed_offsets.get(key_tp, -1):
                 self._flushed_offsets[key_tp] = row[4]
 
-        logger.debug(
+        logger.info(
             "postgres_sink.flushed",
             sink_id=self.sink_id,
             rows=len(batch),
+            latency_ms=round(elapsed_ms, 2),
         )
 
     async def stop(self) -> None:

@@ -32,10 +32,12 @@ class TableMaintenanceMonitor:
         table: Any,
         table_name: str,
         config: TableMaintenanceConfig,
+        write_lock: asyncio.Lock | None = None,
     ) -> None:
         self._table = table
         self._table_name = table_name
         self._config = config
+        self._write_lock = write_lock
         self._expire_task: asyncio.Task[None] | None = None
         self._compact_task: asyncio.Task[None] | None = None
 
@@ -59,13 +61,27 @@ class TableMaintenanceMonitor:
                     await task
         logger.info("table_maintenance.stopped", table=self._table_name)
 
+    async def _acquire_lock(self) -> Any:
+        """Acquire the write lock if one was provided."""
+        if self._write_lock is not None:
+            await self._write_lock.acquire()
+
+    def _release_lock(self) -> None:
+        """Release the write lock if one was provided."""
+        if self._write_lock is not None and self._write_lock.locked():
+            self._write_lock.release()
+
     async def _expire_loop(self) -> None:
         while True:
             await asyncio.sleep(self._config.expire_snapshots_interval_seconds)
             try:
-                await asyncio.get_event_loop().run_in_executor(
-                    None, self._do_expire_snapshots
-                )
+                await self._acquire_lock()
+                try:
+                    await asyncio.get_event_loop().run_in_executor(
+                        None, self._do_expire_snapshots
+                    )
+                finally:
+                    self._release_lock()
             except Exception:
                 logger.exception(
                     "table_maintenance.expire_error", table=self._table_name
@@ -75,7 +91,13 @@ class TableMaintenanceMonitor:
         while True:
             await asyncio.sleep(self._config.compaction_interval_seconds)
             try:
-                await asyncio.get_event_loop().run_in_executor(None, self._do_compact)
+                await self._acquire_lock()
+                try:
+                    await asyncio.get_event_loop().run_in_executor(
+                        None, self._do_compact
+                    )
+                finally:
+                    self._release_lock()
             except Exception:
                 logger.exception(
                     "table_maintenance.compact_error", table=self._table_name

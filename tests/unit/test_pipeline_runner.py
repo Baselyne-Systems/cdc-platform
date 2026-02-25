@@ -367,3 +367,35 @@ class TestPartitionWorkerResilience:
         worker.cancel()
         with pytest.raises(asyncio.CancelledError):
             await worker
+
+
+@pytest.mark.asyncio
+class TestGracefulShutdown:
+    async def test_shutdown_drains_queues_before_cancelling_workers(self):
+        """Shutdown should process remaining queued events before cancelling."""
+        config = _make_pipeline(_webhook_sink_config("wh1"))
+        pipeline = Pipeline(config, _make_platform())
+
+        sink = AsyncMock()
+        sink.sink_id = "wh1"
+        type(sink).flushed_offsets = PropertyMock(return_value={})
+        pipeline._sinks = [sink]
+
+        # Create a queue with an event and start a worker
+        queue: asyncio.Queue[SourceEvent] = asyncio.Queue(maxsize=10)
+        tp = ("cdc.public.customers", 0)
+        pipeline._partition_queues[tp] = queue
+        pipeline._partition_workers[tp] = asyncio.create_task(
+            pipeline._partition_loop(tp, queue)
+        )
+
+        await queue.put(_make_event(offset=42))
+        # Let the worker process the event
+        await asyncio.sleep(0.05)
+
+        await pipeline._shutdown()
+
+        # Event should have been processed before shutdown
+        sink.write.assert_awaited_once()
+        assert len(pipeline._partition_queues) == 0
+        assert len(pipeline._partition_workers) == 0

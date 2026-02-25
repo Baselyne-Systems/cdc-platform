@@ -35,16 +35,55 @@ class KafkaProvisioner:
             replication_factor=self._platform.kafka.topic_replication_factor,
         )
 
-        # 2. Deploy Debezium connector
-        async with DebeziumClient(self._platform.connector) as client:
-            await client.wait_until_ready()
-            result = await client.register_connector(pipeline, self._platform)
-            logger.info("pipeline.connector_deployed", pipeline_id=pipeline.pipeline_id)
+        # 2. Deploy Debezium connector — rollback topics on failure
+        try:
+            async with DebeziumClient(self._platform.connector) as client:
+                await client.wait_until_ready()
+                result = await client.register_connector(pipeline, self._platform)
+                logger.info(
+                    "pipeline.connector_deployed",
+                    pipeline_id=pipeline.pipeline_id,
+                )
+        except Exception:
+            logger.error(
+                "pipeline.connector_deploy_failed",
+                pipeline_id=pipeline.pipeline_id,
+                topics=all_topics,
+            )
+            self._rollback_topics(all_topics)
+            raise
 
         return {
             "topics": all_topics,
             "connector": result,
         }
+
+    def _rollback_topics(self, topics: list[str]) -> None:
+        """Best-effort cleanup of topics created during a failed provision."""
+        assert self._platform.kafka is not None
+        try:
+            from confluent_kafka.admin import AdminClient
+
+            admin = AdminClient(
+                {"bootstrap.servers": self._platform.kafka.bootstrap_servers}
+            )
+            futures = admin.delete_topics(topics)
+            for topic, fut in futures.items():
+                try:
+                    fut.result()
+                    logger.info("pipeline.rollback_topic_deleted", topic=topic)
+                except Exception as exc:
+                    logger.warning(
+                        "pipeline.rollback_topic_delete_failed",
+                        topic=topic,
+                        error=str(exc),
+                    )
+        except Exception as exc:
+            logger.warning(
+                "pipeline.rollback_failed",
+                topics=topics,
+                error=str(exc),
+            )
 
     async def teardown(self, pipeline: PipelineConfig) -> None:
         assert self._platform.connector is not None

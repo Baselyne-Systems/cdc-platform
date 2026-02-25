@@ -271,3 +271,32 @@ class TestPostgresSink:
             h = await sink.health()
             spy.assert_called_once()
             assert h["status"] == "running"
+
+    async def test_reconnects_on_operational_error(self):
+        """When flush hits OperationalError, it reconnects before next retry."""
+        sink = _make_sink(batch_size=10)
+        mock_psycopg2 = MagicMock()
+        mock_psycopg2.OperationalError = type("OperationalError", (Exception,), {})
+
+        # First call raises OperationalError, second succeeds
+        bad_cursor = MagicMock()
+        bad_cursor.executemany.side_effect = mock_psycopg2.OperationalError("conn lost")
+
+        good_cursor = MagicMock()
+        new_conn = MagicMock()
+        new_conn.cursor.return_value = good_cursor
+
+        sink._conn = MagicMock()
+        sink._conn.cursor.return_value = bad_cursor
+
+        mock_psycopg2.connect.return_value = new_conn
+
+        with patch.dict("sys.modules", {"psycopg2": mock_psycopg2}):
+            await sink.write(key=None, value=None, topic="t", partition=0, offset=1)
+            await sink.flush()
+
+        # Should have reconnected and succeeded on second attempt
+        mock_psycopg2.connect.assert_called_once()
+        good_cursor.executemany.assert_called_once()
+        new_conn.commit.assert_called_once()
+        assert sink.flushed_offsets == {("t", 0): 1}

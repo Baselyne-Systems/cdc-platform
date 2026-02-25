@@ -120,7 +120,7 @@ class LagMonitor:
                     ],
                 )
             except Exception as exc:
-                logger.debug("consumer.lag_check_failed", error=str(exc))
+                logger.warning("consumer.lag_check_failed", error=str(exc))
 
     @property
     def latest_lag(self) -> list[PartitionLag]:

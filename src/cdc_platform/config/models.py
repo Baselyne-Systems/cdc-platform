@@ -68,35 +68,40 @@ class KafkaConfig(BaseModel):
     auto_offset_reset: str = "earliest"
     enable_idempotence: bool = True
     acks: str = "all"
-    topic_num_partitions: int = 1
-    topic_replication_factor: int = 1
+    topic_num_partitions: int = Field(default=1, ge=1)
+    topic_replication_factor: int = Field(default=1, ge=1)
+    # Consumer tuning
+    session_timeout_ms: int = Field(default=45000, ge=1000)
+    max_poll_interval_ms: int = Field(default=300000, ge=1000)
+    fetch_min_bytes: int = Field(default=1, ge=1)
+    fetch_max_wait_ms: int = Field(default=500, ge=0)
 
 
 class ConnectorConfig(BaseModel):
     """Kafka Connect (Debezium) REST API settings."""
 
     connect_url: str = "http://localhost:8083"
-    timeout_seconds: float = 30.0
-    retry_max_attempts: int = 5
-    retry_wait_seconds: float = 2.0
+    timeout_seconds: float = Field(default=30.0, gt=0)
+    retry_max_attempts: int = Field(default=5, ge=1)
+    retry_wait_seconds: float = Field(default=2.0, gt=0)
 
 
 class DLQConfig(BaseModel):
     """Dead Letter Queue settings."""
 
     enabled: bool = True
-    topic_suffix: str = "dlq"
-    max_retries: int = 3
+    topic_suffix: str = Field(default="dlq", min_length=1)
+    max_retries: int = Field(default=3, ge=0)
     include_headers: bool = True
 
 
 class RetryConfig(BaseModel):
     """Retry / backoff configuration."""
 
-    max_attempts: int = 5
-    initial_wait_seconds: float = 1.0
-    max_wait_seconds: float = 60.0
-    multiplier: float = 2.0
+    max_attempts: int = Field(default=5, ge=1)
+    initial_wait_seconds: float = Field(default=1.0, gt=0)
+    max_wait_seconds: float = Field(default=60.0, gt=0)
+    multiplier: float = Field(default=2.0, ge=1.0)
     jitter: bool = True
 
 
@@ -130,7 +135,7 @@ class PostgresSinkConfig(BaseModel):
     username: str = "cdc_user"
     password: SecretStr = SecretStr("cdc_password")
     target_table: str
-    batch_size: int = 100
+    batch_size: int = Field(default=100, ge=1)
     upsert: bool = False
 
     @field_validator("target_table")
@@ -166,7 +171,7 @@ class IcebergSinkConfig(BaseModel):
     table_namespace: str = "default"
     table_name: str
     write_mode: Literal["append", "upsert"] = "append"
-    batch_size: int = 1000
+    batch_size: int = Field(default=1000, ge=1)
     auto_create_table: bool = True
     partition_by: list[str] = Field(default_factory=list)
     s3_endpoint: str | None = None
@@ -219,10 +224,9 @@ class PlatformConfig(BaseModel):
     connector: ConnectorConfig | None = ConnectorConfig()
     dlq: DLQConfig = DLQConfig()
     retry: RetryConfig = RetryConfig()
-    max_buffered_messages: int = 1000
-    partition_concurrency: int = 0
-    schema_monitor_interval_seconds: float = 30.0
-    lag_monitor_interval_seconds: float = 15.0
+    max_buffered_messages: int = Field(default=1000, ge=1)
+    schema_monitor_interval_seconds: float = Field(default=30.0, gt=0)
+    lag_monitor_interval_seconds: float = Field(default=15.0, gt=0)
     stop_on_incompatible_schema: bool = False
     health_port: int = 8080
     health_enabled: bool = True

@@ -67,6 +67,10 @@ class CDCConsumer:
                 "group.id": kafka_config.group_id,
                 "auto.offset.reset": kafka_config.auto_offset_reset,
                 "enable.auto.commit": False,
+                "session.timeout.ms": kafka_config.session_timeout_ms,
+                "max.poll.interval.ms": kafka_config.max_poll_interval_ms,
+                "fetch.min.bytes": kafka_config.fetch_min_bytes,
+                "fetch.wait.max.ms": kafka_config.fetch_max_wait_ms,
             }
         )
 

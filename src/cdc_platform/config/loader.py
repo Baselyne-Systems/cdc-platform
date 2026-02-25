@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import yaml
+from pydantic import ValidationError
 
 from cdc_platform.config.defaults import (
     DEFAULTS_DIR,
@@ -54,10 +55,18 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
     if not p.exists():
         msg = f"Config file not found: {p}"
         raise FileNotFoundError(msg)
-    with p.open() as f:
-        data = yaml.safe_load(f)
+    try:
+        with p.open() as f:
+            data = yaml.safe_load(f)
+    except yaml.YAMLError as exc:
+        msg = f"Failed to parse YAML in {p}"
+        if hasattr(exc, "problem_mark") and exc.problem_mark is not None:
+            mark = exc.problem_mark
+            msg += f" at line {mark.line + 1}, column {mark.column + 1}"
+        msg += f": {exc}"
+        raise ValueError(msg) from exc
     if not isinstance(data, dict):
-        msg = f"Expected a YAML mapping at top level, got {type(data).__name__}"
+        msg = f"Expected a YAML mapping at top level in {p}, got {type(data).__name__}"
         raise TypeError(msg)
     return cast(dict[str, Any], resolve_env_vars(data))
 
@@ -75,7 +84,12 @@ def load_platform_config(path: str | Path | None = None) -> PlatformConfig:
     if path is not None:
         overrides = load_yaml(path)
         base = merge_configs(base, overrides)
-    return PlatformConfig.model_validate(base)
+    try:
+        return PlatformConfig.model_validate(base)
+    except ValidationError as exc:
+        source = path or "built-in defaults"
+        msg = f"Invalid platform config ({source}):\n{exc}"
+        raise ValueError(msg) from exc
 
 
 def load_pipeline_config(
@@ -85,4 +99,8 @@ def load_pipeline_config(
 ) -> PipelineConfig:
     """Load a user config YAML and merge with pipeline defaults."""
     overrides = load_yaml(path)
-    return build_pipeline_config(overrides, defaults=defaults)
+    try:
+        return build_pipeline_config(overrides, defaults=defaults)
+    except ValidationError as exc:
+        msg = f"Invalid pipeline config ({path}):\n{exc}"
+        raise ValueError(msg) from exc

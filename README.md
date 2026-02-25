@@ -261,7 +261,6 @@ When `transport_mode` is `kafka`, the `kafka` and `connector` sections are requi
 | Field                            | Default | Description                                            |
 |----------------------------------|---------|--------------------------------------------------------|
 | `max_buffered_messages`          | `1000`  | Max messages queued **per partition** before backpressure kicks in. Total memory ≈ this × num_partitions × avg_msg_size. |
-| `partition_concurrency`          | `0`     | 0 = auto (one async task per assigned partition). Reserved for future use. |
 | `schema_monitor_interval_seconds`| `30.0`  | How often to poll Schema Registry for version changes. Lower = faster detection, higher registry load. |
 | `lag_monitor_interval_seconds`   | `15.0`  | How often to query and log consumer lag. Creates a short-lived Kafka admin connection on each poll. |
 | `stop_on_incompatible_schema`    | `false` | When `true`, halt the pipeline on backward-incompatible schema changes (field removal, type narrowing). When `false`, log and continue. |

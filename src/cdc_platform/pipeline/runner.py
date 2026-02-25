@@ -44,6 +44,7 @@ class Pipeline:
         self._partition_workers: dict[tuple[str, int], asyncio.Task[None]] = {}
         self._monitor: SourceMonitor | None = None
         self._health_server: HealthServer | None = None
+        self._queue_monitor_task: asyncio.Task[None] | None = None
 
     def start(self) -> None:
         """Start the full pipeline (blocking)."""
@@ -85,13 +86,16 @@ class Pipeline:
             )
             await self._health_server.start()
 
+        # 7. Start queue depth monitor
+        self._queue_monitor_task = asyncio.create_task(self._monitor_queue_depth())
+
         logger.info(
             "pipeline.started",
             pipeline_id=self._pipeline.pipeline_id,
             sinks=[s.sink_id for s in self._sinks],
         )
 
-        # 7. Consume — polls transport, enqueues to partition queues
+        # 8. Consume — polls transport, enqueues to partition queues
         try:
             await self._source.start(
                 handler=self._enqueue,
@@ -136,6 +140,26 @@ class Pipeline:
                 )
             finally:
                 queue.task_done()
+
+    async def _monitor_queue_depth(self) -> None:
+        """Periodically log per-partition queue depth for observability."""
+        while True:
+            await asyncio.sleep(self._platform.lag_monitor_interval_seconds)
+            if not self._partition_queues:
+                continue
+            depths = {
+                f"{tp[0]}:{tp[1]}": q.qsize()
+                for tp, q in self._partition_queues.items()
+            }
+            total = sum(depths.values())
+            maxsize = self._platform.max_buffered_messages
+            if total > 0:
+                logger.info(
+                    "pipeline.queue_depth",
+                    total_buffered=total,
+                    max_per_partition=maxsize,
+                    partitions=depths,
+                )
 
     def _on_partitions_assigned(self, partitions: list[tuple[str, int]]) -> None:
         for tp in partitions:
@@ -194,10 +218,33 @@ class Pipeline:
 
     async def _shutdown(self) -> None:
         """Stop health server, monitors, drain workers, flush sinks."""
+        if self._queue_monitor_task:
+            self._queue_monitor_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._queue_monitor_task
         if self._health_server:
             await self._health_server.stop()
         if self._monitor:
             await self._monitor.stop()
+
+        # Drain in-flight events from partition queues before cancelling workers.
+        # Use a timeout to prevent indefinite waiting on stuck sinks.
+        drain_timeout = 30.0
+        if self._partition_queues:
+            join_tasks = [q.join() for q in self._partition_queues.values()]
+            if join_tasks:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*join_tasks), timeout=drain_timeout
+                    )
+                    logger.info("pipeline.queues_drained")
+                except TimeoutError:
+                    pending = sum(q.qsize() for q in self._partition_queues.values())
+                    logger.warning(
+                        "pipeline.drain_timeout",
+                        timeout_seconds=drain_timeout,
+                        events_remaining=pending,
+                    )
 
         # Cancel all partition workers
         for worker in self._partition_workers.values():

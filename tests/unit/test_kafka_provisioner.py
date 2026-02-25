@@ -83,3 +83,29 @@ class TestKafkaProvisioner:
             await provisioner.teardown(_pipeline())
 
             mock_client.delete_connector.assert_awaited_once()
+
+    async def test_provision_rolls_back_topics_on_connector_failure(self):
+        """If connector registration fails, created topics should be deleted."""
+        platform = PlatformConfig()
+        provisioner = KafkaProvisioner(platform)
+
+        with (
+            patch(
+                "cdc_platform.sources.kafka.provisioner.ensure_topics"
+            ) as mock_ensure,
+            patch("cdc_platform.sources.kafka.provisioner.DebeziumClient") as mock_cls,
+            patch.object(provisioner, "_rollback_topics") as mock_rollback,
+        ):
+            mock_client = AsyncMock()
+            mock_client.wait_until_ready.side_effect = RuntimeError("connect down")
+            mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            with pytest.raises(RuntimeError, match="connect down"):
+                await provisioner.provision(_pipeline())
+
+            mock_ensure.assert_called_once()
+            mock_rollback.assert_called_once()
+            # Rollback should be called with the topic list
+            rollback_topics = mock_rollback.call_args[0][0]
+            assert len(rollback_topics) > 0

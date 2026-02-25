@@ -53,6 +53,35 @@ class TestKafkaConfig:
         assert cfg.topic_num_partitions == 6
         assert cfg.topic_replication_factor == 3
 
+    def test_consumer_tuning_defaults(self):
+        cfg = KafkaConfig()
+        assert cfg.session_timeout_ms == 45000
+        assert cfg.max_poll_interval_ms == 300000
+        assert cfg.fetch_min_bytes == 1
+        assert cfg.fetch_max_wait_ms == 500
+
+    def test_consumer_tuning_custom(self):
+        cfg = KafkaConfig(
+            session_timeout_ms=60000,
+            max_poll_interval_ms=600000,
+            fetch_min_bytes=1024,
+            fetch_max_wait_ms=1000,
+        )
+        assert cfg.session_timeout_ms == 60000
+        assert cfg.fetch_min_bytes == 1024
+
+    def test_rejects_zero_partitions(self):
+        with pytest.raises(ValidationError):
+            KafkaConfig(topic_num_partitions=0)
+
+    def test_rejects_negative_replication_factor(self):
+        with pytest.raises(ValidationError):
+            KafkaConfig(topic_replication_factor=-1)
+
+    def test_rejects_low_session_timeout(self):
+        with pytest.raises(ValidationError):
+            KafkaConfig(session_timeout_ms=500)
+
 
 class TestDLQConfig:
     def test_defaults(self):
@@ -60,6 +89,10 @@ class TestDLQConfig:
         assert cfg.enabled is True
         assert cfg.topic_suffix == "dlq"
         assert cfg.max_retries == 3
+
+    def test_rejects_empty_topic_suffix(self):
+        with pytest.raises(ValidationError):
+            DLQConfig(topic_suffix="")
 
 
 class TestPipelineConfig:
@@ -130,3 +163,31 @@ class TestPlatformConfig:
         )
         assert cfg.max_buffered_messages == 500
         assert cfg.stop_on_incompatible_schema is True
+
+    def test_rejects_zero_max_buffered_messages(self):
+        with pytest.raises(ValidationError):
+            PlatformConfig(max_buffered_messages=0)
+
+    def test_rejects_negative_monitor_interval(self):
+        with pytest.raises(ValidationError):
+            PlatformConfig(schema_monitor_interval_seconds=-1)
+
+
+class TestRetryConfigBounds:
+    def test_rejects_zero_max_attempts(self):
+        from cdc_platform.config.models import RetryConfig
+
+        with pytest.raises(ValidationError):
+            RetryConfig(max_attempts=0)
+
+    def test_rejects_zero_initial_wait(self):
+        from cdc_platform.config.models import RetryConfig
+
+        with pytest.raises(ValidationError):
+            RetryConfig(initial_wait_seconds=0)
+
+    def test_rejects_multiplier_below_one(self):
+        from cdc_platform.config.models import RetryConfig
+
+        with pytest.raises(ValidationError):
+            RetryConfig(multiplier=0.5)

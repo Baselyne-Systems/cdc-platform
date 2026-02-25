@@ -9,9 +9,12 @@ from cdc_platform.config.models import (
     PipelineConfig,
     PlatformConfig,
     SourceConfig,
+    SourceType,
 )
 from cdc_platform.sources.debezium.client import ConnectError, DebeziumClient
 from cdc_platform.sources.debezium.config import (
+    build_connector_config,
+    build_mysql_connector_config,
     build_postgres_connector_config,
     connector_name,
 )
@@ -53,6 +56,50 @@ class TestConnectorConfig:
         assert cfg["plugin.name"] == "pgoutput"
         assert cfg["database.dbname"] == "testdb"
         assert cfg["table.include.list"] == "public.customers"
+
+
+class TestMySQLConnectorConfig:
+    def test_build_mysql_config(self):
+        pipeline = PipelineConfig(
+            pipeline_id="test-mysql",
+            source=SourceConfig(
+                source_type=SourceType.MYSQL,
+                host="mysql-host",
+                port=3306,
+                database="testdb",
+                password="secret",
+                tables=["mydb.users", "mydb.orders"],
+            ),
+        )
+        platform = PlatformConfig()
+        cfg = build_mysql_connector_config(pipeline, platform)
+        assert cfg["connector.class"] == "io.debezium.connector.mysql.MySqlConnector"
+        assert cfg["database.hostname"] == "mysql-host"
+        assert cfg["database.port"] == "3306"
+        assert cfg["database.include.list"] == "testdb"
+        assert cfg["table.include.list"] == "mydb.users,mydb.orders"
+        assert cfg["key.converter"] == "io.confluent.connect.avro.AvroConverter"
+        assert "schema.history.internal.kafka.bootstrap.servers" in cfg
+        assert "schema.history.internal.kafka.topic" in cfg
+
+    def test_build_connector_config_dispatches_mysql(self):
+        pipeline = PipelineConfig(
+            pipeline_id="test-mysql",
+            source=SourceConfig(
+                source_type=SourceType.MYSQL,
+                database="testdb",
+                tables=["mydb.t"],
+            ),
+        )
+        platform = PlatformConfig()
+        cfg = build_connector_config(pipeline, platform)
+        assert "MySqlConnector" in cfg["connector.class"]
+
+    def test_build_connector_config_dispatches_postgres(
+        self, pipeline: PipelineConfig, platform: PlatformConfig
+    ):
+        cfg = build_connector_config(pipeline, platform)
+        assert "PostgresConnector" in cfg["connector.class"]
 
 
 class TestDebeziumClient:

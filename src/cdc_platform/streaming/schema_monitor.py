@@ -107,7 +107,7 @@ class SchemaMonitor:
                             self._known_versions[subject] = version
                             self._known_schemas[subject] = schema_str
                     except Exception as exc:
-                        logger.debug(
+                        logger.warning(
                             "schema.check_failed", subject=subject, error=str(exc)
                         )
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import httpx
@@ -97,18 +98,21 @@ class WebhookSink:
             )
             response.raise_for_status()
 
+        t0 = time.monotonic()
         await _send()
+        elapsed_ms = (time.monotonic() - t0) * 1000
 
         key_tp = (topic, partition)
         if offset > self._flushed_offsets.get(key_tp, -1):
             self._flushed_offsets[key_tp] = offset
 
-        logger.debug(
+        logger.info(
             "webhook_sink.write",
             sink_id=self.sink_id,
             topic=topic,
             partition=partition,
             offset=offset,
+            latency_ms=round(elapsed_ms, 2),
         )
 
     async def flush(self) -> None:

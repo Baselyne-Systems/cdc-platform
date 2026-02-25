@@ -33,7 +33,6 @@ retry:
   jitter: true
 
 max_buffered_messages: 1000
-partition_concurrency: 0
 schema_monitor_interval_seconds: 30.0
 lag_monitor_interval_seconds: 15.0
 stop_on_incompatible_schema: false

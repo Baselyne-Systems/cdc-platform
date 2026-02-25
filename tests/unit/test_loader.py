@@ -109,6 +109,39 @@ class TestLoadDemoConfig:
         assert enabled == ["webhook-notifications"]
 
 
+class TestLoadYAMLErrors:
+    def test_malformed_yaml_raises_with_file_path(self, tmp_path: Path):
+        """Malformed YAML should mention the file path in the error."""
+        bad_yaml = tmp_path / "bad.yaml"
+        bad_yaml.write_text("key: [unclosed bracket")
+        with pytest.raises(ValueError, match="bad.yaml"):
+            from cdc_platform.config.loader import load_yaml
+
+            load_yaml(bad_yaml)
+
+    def test_file_not_found_raises(self):
+        with pytest.raises(FileNotFoundError, match="nonexistent"):
+            from cdc_platform.config.loader import load_yaml
+
+            load_yaml("/tmp/nonexistent.yaml")
+
+    def test_invalid_platform_config_raises_with_context(self, tmp_path: Path):
+        """Invalid platform config should include the file path in error."""
+        bad_platform = tmp_path / "platform.yaml"
+        bad_platform.write_text("max_buffered_messages: 0\n")
+        with pytest.raises(ValueError, match="Invalid platform config"):
+            load_platform_config(bad_platform)
+
+    def test_invalid_pipeline_config_raises_with_context(self, tmp_path: Path):
+        """Invalid pipeline config should include the file path in error."""
+        bad_pipeline = tmp_path / "pipeline.yaml"
+        bad_pipeline.write_text(
+            "pipeline_id: test\nsource:\n  database: db\n  tables:\n    - badtable\n"
+        )
+        with pytest.raises(ValueError, match="Invalid pipeline config"):
+            load_pipeline_config(bad_pipeline)
+
+
 class TestLoadPlatformConfig:
     def test_defaults_when_no_path(self):
         """load_platform_config() with no path returns all defaults."""

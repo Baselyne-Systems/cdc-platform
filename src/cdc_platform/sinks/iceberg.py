@@ -1,6 +1,8 @@
 """Apache Iceberg lakehouse sink connector."""
 
+import asyncio
 import contextlib
+import time
 from typing import Any
 
 import structlog
@@ -26,6 +28,7 @@ class IcebergSink:
         self._buffer: list[dict[str, Any]] = []
         self._flushed_offsets: dict[tuple[str, int], int] = {}
         self._maintenance_monitor: Any = None
+        self._write_lock: asyncio.Lock = asyncio.Lock()
 
     @property
     def sink_id(self) -> str:
@@ -91,6 +94,7 @@ class IcebergSink:
                 table=self._table,
                 table_name=full_name,
                 config=self._ice_config.maintenance,
+                write_lock=self._write_lock,
             )
             await self._maintenance_monitor.start()
 
@@ -137,35 +141,50 @@ class IcebergSink:
         full_name = f"{cfg.table_namespace}.{cfg.table_name}"
 
         if self._table is None:
-            partition_spec = self._build_partition_spec(cfg.partition_by)
-            with contextlib.suppress(Exception):
-                # Might already exist or driver doesn't support it
-                self._catalog.create_namespace(cfg.table_namespace)
-            self._table = self._catalog.create_table(
-                full_name,
-                schema=arrow_table.schema,
-                partition_spec=partition_spec,
-            )
-            logger.info(
-                "iceberg_sink.table_created",
-                sink_id=self.sink_id,
-                table=full_name,
-            )
+            async with self._write_lock:
+                # Double-check after acquiring lock (another flush may have created it)
+                if self._table is None:
+                    partition_spec = self._build_partition_spec(cfg.partition_by)
+                    with contextlib.suppress(Exception):
+                        self._catalog.create_namespace(cfg.table_namespace)
+                    try:
+                        self._table = self._catalog.create_table(
+                            full_name,
+                            schema=arrow_table.schema,
+                            partition_spec=partition_spec,
+                        )
+                        logger.info(
+                            "iceberg_sink.table_created",
+                            sink_id=self.sink_id,
+                            table=full_name,
+                        )
+                    except Exception:
+                        # Table may already exist from a concurrent creation
+                        self._table = self._catalog.load_table(full_name)
+                        logger.info(
+                            "iceberg_sink.table_loaded_after_race",
+                            sink_id=self.sink_id,
+                            table=full_name,
+                        )
 
-        if cfg.write_mode == "upsert":
-            self._table.upsert(arrow_table)
-        else:
-            self._table.append(arrow_table)
+        t0 = time.monotonic()
+        async with self._write_lock:
+            if cfg.write_mode == "upsert":
+                self._table.upsert(arrow_table)
+            else:
+                self._table.append(arrow_table)
+        elapsed_ms = (time.monotonic() - t0) * 1000
 
         for row in batch:
             key_tp = (row["_cdc_topic"], row["_cdc_partition"])
             if row["_cdc_offset"] > self._flushed_offsets.get(key_tp, -1):
                 self._flushed_offsets[key_tp] = row["_cdc_offset"]
 
-        logger.debug(
+        logger.info(
             "iceberg_sink.flushed",
             sink_id=self.sink_id,
             rows=len(batch),
+            latency_ms=round(elapsed_ms, 2),
         )
 
     async def stop(self) -> None:
